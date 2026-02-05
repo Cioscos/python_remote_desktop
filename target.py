@@ -10,6 +10,10 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 
+# Configurazioni PyAutoGUI per velocità
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0  # Rimuove il ritardo di default tra le azioni
+
 
 class RemoteDesktopTarget:
     def __init__(self, controller_ip, port=9999):
@@ -17,160 +21,142 @@ class RemoteDesktopTarget:
         self.port = port
         self.sock = None
         self.running = False
-        pyautogui.FAILSAFE = False
         self.screen_w, self.screen_h = pyautogui.size()
 
-    def _handle_mouse_input(self):
-        """Thread mouse con gestione timeout per uscita pulita."""
-        payload_size = struct.calcsize(">Bff")
-
+    def _handle_input(self):
+        """Thread ricezione comandi (Mouse e Tastiera)."""
         while self.running:
             try:
-                # recv ora lancerà socket.timeout se non riceve nulla entro 0.5s
-                data = self.sock.recv(payload_size)
-                if not data:
-                    break
+                # 1. Leggi il tipo di evento (1 byte)
+                # Tipi: 0=Move, 1=Down, 2=Up, 3=Scroll, 4=KeyDown, 5=KeyUp
+                header = self.sock.recv(1)
+                if not header: break
+                event_type = struct.unpack(">B", header)[0]
 
-                event_type, norm_x, norm_y = struct.unpack(">Bff", data)
-                real_x = int(norm_x * self.screen_w)
-                real_y = int(norm_y * self.screen_h)
+                if event_type == 0:  # MOUSE MOVE
+                    data = self.sock.recv(8)  # 2 float (4+4 byte)
+                    norm_x, norm_y = struct.unpack(">ff", data)
+                    x, y = int(norm_x * self.screen_w), int(norm_y * self.screen_h)
+                    pyautogui.moveTo(x, y, _pause=False)
 
-                if event_type == 0:
-                    pyautogui.moveTo(real_x, real_y, _pause=False)
-                elif event_type == 1:
-                    pyautogui.click(real_x, real_y)
+                elif event_type in [1, 2]:  # MOUSE BUTTON DOWN/UP
+                    data = self.sock.recv(9)  # button_code (1B) + 2 float (8B)
+                    btn_code, norm_x, norm_y = struct.unpack(">Bff", data)
+                    x, y = int(norm_x * self.screen_w), int(norm_y * self.screen_h)
+
+                    # Mappa codici: 1=left, 2=middle, 3=right
+                    btn_map = {1: 'left', 2: 'middle', 3: 'right'}
+                    button = btn_map.get(btn_code, 'left')
+
+                    if event_type == 1:
+                        pyautogui.mouseDown(x, y, button=button)
+                    else:
+                        pyautogui.mouseUp(x, y, button=button)
+
+                elif event_type == 3:  # SCROLL
+                    data = self.sock.recv(4)  # int (4B)
+                    amount = struct.unpack(">i", data)[0]
+                    pyautogui.scroll(amount)
+
+                elif event_type in [4, 5]:  # KEYBOARD
+                    # Legge lunghezza nome tasto (1B)
+                    len_byte = self.sock.recv(1)
+                    if not len_byte: break
+                    key_len = struct.unpack(">B", len_byte)[0]
+
+                    # Legge il nome del tasto
+                    key_name = self.sock.recv(key_len).decode('utf-8')
+
+                    if event_type == 4:
+                        pyautogui.keyDown(key_name)
+                    else:
+                        pyautogui.keyUp(key_name)
 
             except socket.timeout:
-                # Nessun dato ricevuto, torniamo su per controllare 'self.running'
                 continue
-            except Exception:
+            except Exception as e:
+                print(f"[Target] Errore input: {e}")
                 break
 
     def start(self):
         print(f"[Target] Avvio client verso {self.controller_ip}:{self.port}")
-        print("[Info] Premi Ctrl+C nella console per terminare.")
 
         while True:
             try:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(5.0)  # Timeout per la connect
+                self.sock.settimeout(5.0)
                 self.sock.connect((self.controller_ip, self.port))
-
-                # Una volta connesso, riduciamo il timeout per rendere reattivo recv
-                self.sock.settimeout(0.5)
+                self.sock.settimeout(0.5)  # Timeout breve per recv
 
                 print("[Target] Connesso al Controller!")
                 self.running = True
 
-                mouse_thread = threading.Thread(target=self._handle_mouse_input, daemon=True)
-                mouse_thread.start()
+                input_thread = threading.Thread(target=self._handle_input, daemon=True)
+                input_thread.start()
 
                 self._stream_screen()
 
             except socket.timeout:
-                print(f"[Target] Timeout connessione verso {self.controller_ip}... Riprovo.")
+                print(f"[Target] Timeout connessione... Riprovo.")
             except (ConnectionRefusedError, OSError):
-                print(f"[Target] Controller non trovato su {self.controller_ip}. Riprovo tra 2s...")
+                print(f"[Target] Controller non trovato. Riprovo tra 2s...")
+                time.sleep(2)
             except KeyboardInterrupt:
-                print("\n[Target] Uscita richiesta dall'utente.")
                 self.running = False
                 break
             finally:
-                if self.running:
-                    self.running = False
-                if self.sock:
-                    self.sock.close()
-
-            # Piccolo sleep prima di riconnettersi, interrompibile
-            try:
-                time.sleep(2)
-            except KeyboardInterrupt:
-                print("\n[Target] Stop durante l'attesa.")
-                break
+                self.running = False
+                if self.sock: self.sock.close()
 
     def _stream_screen(self):
         with mss.mss() as sct:
-            # Monitor 1 è solitamente "tutti i monitor" o il principale.
-            # Se hai più monitor e vuoi solo il primo, usa sct.monitors[1]
             monitor = sct.monitors[1]
+            # Qualità JPEG ridotta per fluidità (puoi alzarla a 70-80)
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
 
             while self.running:
                 try:
                     img = np.array(sct.grab(monitor))
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
                     _, encoded_img = cv2.imencode('.jpg', img, encode_param)
                     data = encoded_img.tobytes()
 
+                    # Invia lunghezza + dati
                     self.sock.sendall(struct.pack(">L", len(data)) + data)
-
-                except (socket.timeout, BlockingIOError):
-                    continue
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    print("[Target] Connessione persa.")
-                    break
-                except Exception as e:
-                    print(f"[Target] Errore stream: {e}")
+                except Exception:
                     break
 
 
-# --- FUNZIONE GUI CONFIGURAZIONE ---
+# --- GUI CONFIGURAZIONE (Invariata) ---
 def get_config_dialog():
-    """Mostra una finestra Tkinter per chiedere IP e Porta."""
     config = {"ip": None, "port": None}
-
     root = tk.Tk()
-    root.title("Configurazione Target")
+    root.title("Config Target")
     root.geometry("300x180")
 
-    # Label e Entry IP
-    tk.Label(root, text="IP del Controller:").pack(pady=(15, 5))
-    entry_ip = tk.Entry(root)
-    entry_ip.insert(0, "192.168.1.X")  # Placeholder comodo
-    entry_ip.pack()
+    tk.Label(root, text="IP Controller:").pack(pady=5)
+    e_ip = tk.Entry(root);
+    e_ip.insert(0, "192.168.1.X");
+    e_ip.pack()
+    tk.Label(root, text="Porta:").pack(pady=5)
+    e_port = tk.Entry(root);
+    e_port.insert(0, "9999");
+    e_port.pack()
 
-    # Label e Entry Porta
-    tk.Label(root, text="Porta:").pack(pady=(5, 5))
-    entry_port = tk.Entry(root)
-    entry_port.insert(0, "9999")
-    entry_port.pack()
-
-    def on_connect():
-        ip = entry_ip.get().strip()
-        port_str = entry_port.get().strip()
-
-        if not ip:
-            messagebox.showwarning("Errore", "Inserisci un IP valido.")
-            return
-
+    def on_c():
         try:
-            port = int(port_str)
-            config["ip"] = ip
-            config["port"] = port
-            root.destroy()  # Chiude la finestra e prosegue
-        except ValueError:
-            messagebox.showerror("Errore", "La porta deve essere un numero.")
+            config["port"] = int(e_port.get())
+            config["ip"] = e_ip.get()
+            root.destroy()
+        except:
+            pass
 
-    tk.Button(root, text="CONNETTI", command=on_connect, bg="#dddddd", height=2).pack(pady=20, fill="x", padx=20)
-
-    # Gestione chiusura con "X"
-    def on_close():
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
+    tk.Button(root, text="CONNETTI", command=on_c).pack(pady=15)
     root.mainloop()
-
     return config["ip"], config["port"]
 
 
 if __name__ == '__main__':
-    # 1. Chiedi configurazione via GUI
-    user_ip, user_port = get_config_dialog()
-
-    # 2. Se l'utente ha confermato, avvia il client
-    if user_ip and user_port:
-        client = RemoteDesktopTarget(user_ip, port=user_port)
-        client.start()
-    else:
-        print("[Target] Avvio annullato.")
+    ip, port = get_config_dialog()
+    if ip and port:
+        RemoteDesktopTarget(ip, port).start()
