@@ -2,204 +2,190 @@
 import socket
 import struct
 import io
-import pygame
-import sys
+import threading
 import tkinter as tk
-from pygame.locals import *
-
-# --- COSTANTI EVENTI ---
-EVT_MOUSE_MOVE = 0
-EVT_MOUSE_L_CLICK = 1
-EVT_MOUSE_R_CLICK = 2
-EVT_MOUSE_SCROLL = 3
-EVT_KEY_DOWN = 4
-EVT_KEY_UP = 5
-
-
-def show_config_dialog():
-    config_data = {"ip": "0.0.0.0", "port": 9999, "confirm": False}
-
-    def on_confirm():
-        config_data["ip"] = entry_ip.get()
-        try:
-            config_data["port"] = int(entry_port.get())
-            config_data["confirm"] = True
-            root.destroy()
-        except ValueError:
-            entry_port.config(bg="#ffcccc")
-
-    root = tk.Tk()
-    root.title("Configurazione Server")
-    root.geometry("300x180")
-    root.eval('tk::PlaceWindow . center')
-
-    tk.Label(root, text="IP di Ascolto (default 0.0.0.0):").pack(pady=(10, 0))
-    entry_ip = tk.Entry(root)
-    entry_ip.insert(0, "0.0.0.0")
-    entry_ip.pack(pady=5)
-
-    tk.Label(root, text="Porta:").pack(pady=(5, 0))
-    entry_port = tk.Entry(root)
-    entry_port.insert(0, "9999")
-    entry_port.pack(pady=5)
-
-    btn = tk.Button(root, text="AVVIA SERVER", command=on_confirm, bg="#dddddd", height=2)
-    btn.pack(pady=15, fill="x", padx=20)
-
-    root.mainloop()
-    if config_data["confirm"]:
-        return config_data["ip"], config_data["port"]
-    return None, None
+from tkinter import messagebox
+from PIL import Image, ImageTk  # Richiede: pip install pillow
 
 
 class RemoteDesktopController:
-    def __init__(self, bind_ip, port):
-        self.bind_ip = bind_ip
-        self.port = port
+    def __init__(self):
         self.sock = None
         self.conn = None
-        self.addr = None
         self.running = False
+        self.server_thread = None
+
+        # Variabili per gestire l'immagine e le dimensioni
+        self.current_image = None
         self.win_w = 800
         self.win_h = 600
-        self.screen = None
+
+        # Inizializza la GUI principale
+        self.root = tk.Tk()
+        self.root.title("Reverse Remote Desktop (Tkinter)")
+        self.root.geometry(f"{self.win_w}x{self.win_h}")
+
+        # Label che conterrà il video
+        self.video_label = tk.Label(self.root, bg="black")
+        self.video_label.pack(fill=tk.BOTH, expand=True)
+
+        # Binding Eventi (Mouse e Ridimensionamento)
+        self.video_label.bind("<Motion>", self._on_mouse_move)
+        self.video_label.bind("<Button-1>", self._on_mouse_click)
+        self.root.bind("<Configure>", self._on_resize)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Mostra subito il dialog di configurazione
+        self._show_config_dialog()
+
+    def _show_config_dialog(self):
+        """Finestra popup modale per inserire IP e Porta prima dell'avvio."""
+        config_win = tk.Toplevel(self.root)
+        config_win.title("Configurazione")
+        config_win.geometry("300x150")
+        config_win.grab_set()  # Blocca la finestra principale finché questa è aperta
+
+        tk.Label(config_win, text="IP Ascolto (default 0.0.0.0):").pack(pady=5)
+        entry_ip = tk.Entry(config_win)
+        entry_ip.insert(0, "0.0.0.0")
+        entry_ip.pack()
+
+        tk.Label(config_win, text="Porta:").pack(pady=5)
+        entry_port = tk.Entry(config_win)
+        entry_port.insert(0, "9999")
+        entry_port.pack()
+
+        def on_confirm():
+            ip = entry_ip.get()
+            try:
+                port = int(entry_port.get())
+                config_win.destroy()
+                # Avvia il server in un thread separato
+                self._start_server_thread(ip, port)
+            except ValueError:
+                entry_port.config(bg="#ffcccc")
+
+        tk.Button(config_win, text="AVVIA", command=on_confirm).pack(pady=15)
+
+        # Se chiude la finestra con la X senza avviare, chiude tutto
+        config_win.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _start_server_thread(self, ip, port):
+        """Avvia il thread di rete per non bloccare la GUI."""
+        self.running = True
+        self.server_thread = threading.Thread(target=self._server_loop, args=(ip, port), daemon=True)
+        self.server_thread.start()
+
+    def _server_loop(self, ip, port):
+        """Logica di rete eseguita in background."""
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            self.sock.bind((ip, port))
+            self.sock.listen(1)
+            print(f"[Thread] In ascolto su {ip}:{port}")
+        except Exception as e:
+            messagebox.showerror("Errore", f"Impossibile avviare il server:\n{e}")
+            self._on_close()
+            return
+
+        while self.running:
+            try:
+                # Accetta connessione
+                self.conn, addr = self.sock.accept()
+                print(f"[Thread] Connesso: {addr}")
+
+                # Loop ricezione stream
+                while self.running:
+                    # 1. Header
+                    header = self._recvall(4)
+                    if not header: break
+                    msg_size = struct.unpack(">L", header)[0]
+
+                    # 2. Dati Immagine
+                    frame_data = self._recvall(msg_size)
+                    if not frame_data: break
+
+                    # 3. Elaborazione Immagine (Decodifica + Resize)
+                    try:
+                        image_stream = io.BytesIO(frame_data)
+                        pil_image = Image.open(image_stream)
+
+                        # Ridimensiona l'immagine PIL in base alla finestra Tkinter attuale
+                        # Nota: win_w e win_h vengono aggiornati dall'evento <Configure>
+                        if self.win_w > 0 and self.win_h > 0:
+                            pil_image = pil_image.resize((self.win_w, self.win_h), Image.Resampling.NEAREST)
+
+                        # Converti per Tkinter
+                        tk_image = ImageTk.PhotoImage(pil_image)
+
+                        # AGGIORNAMENTO GUI: Deve essere thread-safe.
+                        # Aggiorniamo la label direttamente (Tkinter in Python spesso lo tollera)
+                        # o meglio, usiamo after_idle se ci fossero problemi, ma qui semplifichiamo.
+                        self.video_label.configure(image=tk_image)
+                        self.video_label.image = tk_image  # Mantiene riferimento per evitare garbage collection
+
+                    except Exception as e:
+                        print(f"Errore frame: {e}")
+
+                if self.conn: self.conn.close()
+                print("[Thread] Client disconnesso, torno in ascolto...")
+
+            except OSError:
+                break  # Socket chiuso durante la chiusura dell'app
 
     def _recvall(self, n):
         data = b''
         while len(data) < n:
-            if not self.running: return None
             try:
                 chunk = self.conn.recv(n - len(data))
                 if not chunk: return None
                 data += chunk
-            except socket.timeout:
-                continue
-            except OSError:
+            except:
                 return None
         return data
 
-    def _send_event(self, event_type, arg1, arg2):
-        """
-        Invia un evento generico.
-        Struttura: >Bff (Byte, Float, Float)
-        - Mouse Move:   type=0, x, y (normalizzati)
-        - Clicks:       type=1/2, x, y (normalizzati)
-        - Scroll:       type=3, 0, amount (+1/-1)
-        - Key:          type=4/5, keycode, 0
-        """
-        if self.conn and self.running:
+    # --- EVENTI GUI ---
+
+    def _on_resize(self, event):
+        """Cattura il ridimensionamento della finestra."""
+        # Filtriamo eventi spuri (a volte <Configure> scatta per i widget interni)
+        if event.widget == self.root:
+            self.win_w = event.width
+            self.win_h = event.height
+
+    def _on_mouse_move(self, event):
+        """Invia movimento mouse."""
+        self._send_input(0, event.x, event.y)
+
+    def _on_mouse_click(self, event):
+        """Invia click sinistro."""
+        self._send_input(1, event.x, event.y)
+
+    def _send_input(self, type, x, y):
+        """Calcola coordinate normalizzate e invia."""
+        if self.conn and self.win_w > 0 and self.win_h > 0:
+            norm_x = max(0.0, min(1.0, x / self.win_w))
+            norm_y = max(0.0, min(1.0, y / self.win_h))
             try:
-                # Normalizziamo le coordinate solo se sono coordinate (per coerenza logica)
-                # Ma per semplicità inviamo sempre float e lasciamo il target interpretare
-                payload = struct.pack(">Bff", event_type, float(arg1), float(arg2))
-                self.conn.sendall(payload)
-            except Exception:
+                self.conn.sendall(struct.pack(">Bff", type, norm_x, norm_y))
+            except:
                 pass
 
-    def start(self):
-        pygame.init()
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.settimeout(1.0)
-
-        try:
-            self.sock.bind((self.bind_ip, self.port))
-            self.sock.listen(1)
-        except Exception as e:
-            print(f"[Errore] Impossibile avviare: {e}")
-            return
-
-        print(f"[Controller] In ascolto su {self.bind_ip}:{self.port}...")
-
-        try:
-            while True:
-                try:
-                    self.conn, self.addr = self.sock.accept()
-                    self.conn.settimeout(0.5)
-                    print(f"[Controller] Connesso con {self.addr}!")
-                    self.running = True
-                    self._open_window_and_stream()
-                    break
-                except socket.timeout:
-                    continue
-                except KeyboardInterrupt:
-                    break
-        finally:
-            self.cleanup()
-
-    def _open_window_and_stream(self):
-        self.screen = pygame.display.set_mode((self.win_w, self.win_h), pygame.RESIZABLE)
-        pygame.display.set_caption(f"Desktop Remoto - {self.addr[0]}")
-        clock = pygame.time.Clock()
-
-        # Disabilita la ripetizione tasti per evitare spam di pacchetti
-        pygame.key.set_repeat()
-
-        while self.running:
-            for event in pygame.event.get():
-                if event.type == QUIT:
-                    self.running = False
-                    return
-
-                elif event.type == VIDEORESIZE:
-                    self.win_w, self.win_h = event.w, event.h
-                    self.screen = pygame.display.set_mode((self.win_w, self.win_h), pygame.RESIZABLE)
-
-                # --- MOUSE ---
-                elif event.type == MOUSEMOTION:
-                    # Normalizza X e Y tra 0.0 e 1.0
-                    nx = event.pos[0] / self.win_w
-                    ny = event.pos[1] / self.win_h
-                    self._send_event(EVT_MOUSE_MOVE, nx, ny)
-
-                elif event.type == MOUSEBUTTONDOWN:
-                    nx = event.pos[0] / self.win_w
-                    ny = event.pos[1] / self.win_h
-
-                    if event.button == 1:  # Sinistro
-                        self._send_event(EVT_MOUSE_L_CLICK, nx, ny)
-                    elif event.button == 3:  # Destro
-                        self._send_event(EVT_MOUSE_R_CLICK, nx, ny)
-                    elif event.button == 4:  # Rotella Su
-                        self._send_event(EVT_MOUSE_SCROLL, 0, 1)
-                    elif event.button == 5:  # Rotella Giù
-                        self._send_event(EVT_MOUSE_SCROLL, 0, -1)
-
-                # --- TASTIERA ---
-                elif event.type == KEYDOWN:
-                    self._send_event(EVT_KEY_DOWN, event.key, 0)
-
-                elif event.type == KEYUP:
-                    self._send_event(EVT_KEY_UP, event.key, 0)
-
-            # Ricezione Video
-            header = self._recvall(4)
-            if not header: break
-            msg_size = struct.unpack(">L", header)[0]
-            frame_data = self._recvall(msg_size)
-            if not frame_data: break
-
-            try:
-                image_stream = io.BytesIO(frame_data)
-                pyg_img = pygame.image.load(image_stream)
-                pyg_img = pygame.transform.scale(pyg_img, (self.win_w, self.win_h))
-                self.screen.blit(pyg_img, (0, 0))
-                pygame.display.flip()
-            except Exception:
-                pass
-
-            clock.tick(60)
-
-    def cleanup(self):
+    def _on_close(self):
+        """Pulizia alla chiusura."""
         self.running = False
         if self.conn: self.conn.close()
         if self.sock: self.sock.close()
-        pygame.quit()
+        self.root.destroy()
+        import sys
         sys.exit(0)
 
+    def start(self):
+        self.root.mainloop()
 
-if __name__ == '__main__':
-    user_ip, user_port = show_config_dialog()
-    if user_ip and user_port:
-        ctrl = RemoteDesktopController(bind_ip=user_ip, port=user_port)
-        ctrl.start()
+
+if __name__ == "__main__":
+    app = RemoteDesktopController()
+    app.start()
