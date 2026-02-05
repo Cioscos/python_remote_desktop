@@ -97,12 +97,12 @@ class RemoteDesktopController:
         win.geometry("300x220")
 
         tk.Label(win, text="IP Ascolto:").pack(pady=2)
-        e_ip = tk.Entry(win);
-        e_ip.insert(0, "0.0.0.0");
+        e_ip = tk.Entry(win)
+        e_ip.insert(0, "0.0.0.0")
         e_ip.pack()
         tk.Label(win, text="Porta:").pack(pady=2)
-        e_port = tk.Entry(win);
-        e_port.insert(0, "9999");
+        e_port = tk.Entry(win)
+        e_port.insert(0, "9999")
         e_port.pack()
 
         # Checkbox per il cambio risoluzione automatico
@@ -298,7 +298,7 @@ class RemoteDesktopController:
             self.root.destroy()
         except:
             pass
-        import sys;
+        import sys
         sys.exit(0)
 
     def start(self):
