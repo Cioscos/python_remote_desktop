@@ -4,16 +4,19 @@ import struct
 import io
 import pygame
 import sys
-import tkinter as tk  # Libreria per la finestra di configurazione
+import tkinter as tk
 from pygame.locals import *
 
+# --- COSTANTI EVENTI ---
+EVT_MOUSE_MOVE = 0
+EVT_MOUSE_L_CLICK = 1
+EVT_MOUSE_R_CLICK = 2
+EVT_MOUSE_SCROLL = 3
+EVT_KEY_DOWN = 4
+EVT_KEY_UP = 5
 
-# --- FUNZIONE PER IL MENU DI CONFIGURAZIONE ---
+
 def show_config_dialog():
-    """
-    Apre una piccola finestra per chiedere IP e Porta.
-    Restituisce una tupla (ip, port) o None se l'utente chiude.
-    """
     config_data = {"ip": "0.0.0.0", "port": 9999, "confirm": False}
 
     def on_confirm():
@@ -23,39 +26,32 @@ def show_config_dialog():
             config_data["confirm"] = True
             root.destroy()
         except ValueError:
-            # Se la porta non è un numero, colora di rosso (feedback visivo base)
             entry_port.config(bg="#ffcccc")
 
-    # Setup finestra Tkinter
     root = tk.Tk()
     root.title("Configurazione Server")
     root.geometry("300x180")
-    root.eval('tk::PlaceWindow . center')  # Centra la finestra
+    root.eval('tk::PlaceWindow . center')
 
-    # Label e Input IP
     tk.Label(root, text="IP di Ascolto (default 0.0.0.0):").pack(pady=(10, 0))
     entry_ip = tk.Entry(root)
-    entry_ip.insert(0, "0.0.0.0")  # Valore default
+    entry_ip.insert(0, "0.0.0.0")
     entry_ip.pack(pady=5)
 
-    # Label e Input Porta
     tk.Label(root, text="Porta:").pack(pady=(5, 0))
     entry_port = tk.Entry(root)
-    entry_port.insert(0, "9999")  # Valore default
+    entry_port.insert(0, "9999")
     entry_port.pack(pady=5)
 
-    # Bottone Avvia
     btn = tk.Button(root, text="AVVIA SERVER", command=on_confirm, bg="#dddddd", height=2)
     btn.pack(pady=15, fill="x", padx=20)
 
     root.mainloop()
-
     if config_data["confirm"]:
         return config_data["ip"], config_data["port"]
     return None, None
 
 
-# --- CLASSE PRINCIPALE CONTROLLER ---
 class RemoteDesktopController:
     def __init__(self, bind_ip, port):
         self.bind_ip = bind_ip
@@ -64,8 +60,6 @@ class RemoteDesktopController:
         self.conn = None
         self.addr = None
         self.running = False
-
-        # Dimensioni iniziali finestra
         self.win_w = 800
         self.win_h = 600
         self.screen = None
@@ -84,20 +78,26 @@ class RemoteDesktopController:
                 return None
         return data
 
-    def _send_mouse_event(self, event_type, x, y):
-        if self.conn and self.running and self.win_w > 0 and self.win_h > 0:
-            norm_x = max(0.0, min(1.0, x / self.win_w))
-            norm_y = max(0.0, min(1.0, y / self.win_h))
+    def _send_event(self, event_type, arg1, arg2):
+        """
+        Invia un evento generico.
+        Struttura: >Bff (Byte, Float, Float)
+        - Mouse Move:   type=0, x, y (normalizzati)
+        - Clicks:       type=1/2, x, y (normalizzati)
+        - Scroll:       type=3, 0, amount (+1/-1)
+        - Key:          type=4/5, keycode, 0
+        """
+        if self.conn and self.running:
             try:
-                payload = struct.pack(">Bff", event_type, norm_x, norm_y)
+                # Normalizziamo le coordinate solo se sono coordinate (per coerenza logica)
+                # Ma per semplicità inviamo sempre float e lasciamo il target interpretare
+                payload = struct.pack(">Bff", event_type, float(arg1), float(arg2))
                 self.conn.sendall(payload)
             except Exception:
                 pass
 
     def start(self):
-        # Inizializza PyGame (ma senza finestra per ora)
         pygame.init()
-
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.settimeout(1.0)
@@ -106,41 +106,38 @@ class RemoteDesktopController:
             self.sock.bind((self.bind_ip, self.port))
             self.sock.listen(1)
         except Exception as e:
-            print(f"[Errore] Impossibile avviare su {self.bind_ip}:{self.port}")
-            print(f"Dettaglio: {e}")
+            print(f"[Errore] Impossibile avviare: {e}")
             return
 
         print(f"[Controller] In ascolto su {self.bind_ip}:{self.port}...")
-        print("[Info] In attesa del Sender per aprire la finestra video...")
 
         try:
             while True:
                 try:
                     self.conn, self.addr = self.sock.accept()
                     self.conn.settimeout(0.5)
-                    print(f"[Controller] Connesso con {self.addr}! Apro video...")
-
+                    print(f"[Controller] Connesso con {self.addr}!")
                     self.running = True
                     self._open_window_and_stream()
                     break
-
                 except socket.timeout:
                     continue
                 except KeyboardInterrupt:
-                    print("\n[Controller] Stop da tastiera.")
                     break
         finally:
             self.cleanup()
 
     def _open_window_and_stream(self):
         self.screen = pygame.display.set_mode((self.win_w, self.win_h), pygame.RESIZABLE)
-        pygame.display.set_caption(f"Desktop Remoto - {self.addr[0]}:{self.addr[1]}")
+        pygame.display.set_caption(f"Desktop Remoto - {self.addr[0]}")
         clock = pygame.time.Clock()
+
+        # Disabilita la ripetizione tasti per evitare spam di pacchetti
+        pygame.key.set_repeat()
 
         while self.running:
             for event in pygame.event.get():
                 if event.type == QUIT:
-                    print("[Controller] Chiusura richiesta utente.")
                     self.running = False
                     return
 
@@ -148,20 +145,37 @@ class RemoteDesktopController:
                     self.win_w, self.win_h = event.w, event.h
                     self.screen = pygame.display.set_mode((self.win_w, self.win_h), pygame.RESIZABLE)
 
+                # --- MOUSE ---
                 elif event.type == MOUSEMOTION:
-                    self._send_mouse_event(0, event.pos[0], event.pos[1])
+                    # Normalizza X e Y tra 0.0 e 1.0
+                    nx = event.pos[0] / self.win_w
+                    ny = event.pos[1] / self.win_h
+                    self._send_event(EVT_MOUSE_MOVE, nx, ny)
 
                 elif event.type == MOUSEBUTTONDOWN:
-                    if event.button == 1:
-                        self._send_mouse_event(1, event.pos[0], event.pos[1])
+                    nx = event.pos[0] / self.win_w
+                    ny = event.pos[1] / self.win_h
 
-            # Ricezione dati
+                    if event.button == 1:  # Sinistro
+                        self._send_event(EVT_MOUSE_L_CLICK, nx, ny)
+                    elif event.button == 3:  # Destro
+                        self._send_event(EVT_MOUSE_R_CLICK, nx, ny)
+                    elif event.button == 4:  # Rotella Su
+                        self._send_event(EVT_MOUSE_SCROLL, 0, 1)
+                    elif event.button == 5:  # Rotella Giù
+                        self._send_event(EVT_MOUSE_SCROLL, 0, -1)
+
+                # --- TASTIERA ---
+                elif event.type == KEYDOWN:
+                    self._send_event(EVT_KEY_DOWN, event.key, 0)
+
+                elif event.type == KEYUP:
+                    self._send_event(EVT_KEY_UP, event.key, 0)
+
+            # Ricezione Video
             header = self._recvall(4)
-            if not header:
-                print("[Controller] Sender disconnesso.")
-                break
+            if not header: break
             msg_size = struct.unpack(">L", header)[0]
-
             frame_data = self._recvall(msg_size)
             if not frame_data: break
 
@@ -185,12 +199,7 @@ class RemoteDesktopController:
 
 
 if __name__ == '__main__':
-    # 1. Mostra il menu di configurazione
     user_ip, user_port = show_config_dialog()
-
-    # 2. Se l'utente ha premuto "Avvia", lancia il controller
     if user_ip and user_port:
         ctrl = RemoteDesktopController(bind_ip=user_ip, port=user_port)
         ctrl.start()
-    else:
-        print("Avvio annullato dall'utente.")
