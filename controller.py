@@ -88,12 +88,12 @@ class RemoteDesktopController:
         win.geometry("300x180")
 
         tk.Label(win, text="IP Ascolto:").pack(pady=5)
-        e_ip = tk.Entry(win);
-        e_ip.insert(0, "0.0.0.0");
+        e_ip = tk.Entry(win)
+        e_ip.insert(0, "0.0.0.0")
         e_ip.pack()
         tk.Label(win, text="Porta:").pack(pady=5)
-        e_port = tk.Entry(win);
-        e_port.insert(0, "9999");
+        e_port = tk.Entry(win)
+        e_port.insert(0, "9999")
         e_port.pack()
 
         def start_server():
@@ -262,9 +262,13 @@ class RemoteDesktopController:
             self.root.destroy()
         except:
             pass
-        import sys;
+        import sys
         sys.exit(0)
 
+    def start(self):
+        """Avvia il loop principale dell'interfaccia grafica."""
+        self.root.mainloop()
 
 if __name__ == "__main__":
-    RemoteDesktopController().start()
+    app = RemoteDesktopController()
+    app.start()
