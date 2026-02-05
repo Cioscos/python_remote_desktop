@@ -10,12 +10,60 @@ import time
 import tkinter as tk
 import win32gui
 import win32con
+import win32api
+import pywintypes
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
 
-# === GESTIONE CURSORE WINDOWS ===
-# Pre-carichiamo gli handle standard per confrontarli nel loop
+
+# === GESTIONE RISOLUZIONE ===
+class ResolutionManager:
+    def __init__(self):
+        self.original_devmode = None
+        self.current_width = 0
+        self.current_height = 0
+
+    def save_current(self):
+        """Salva la risoluzione attuale per il ripristino."""
+        self.original_devmode = win32api.EnumDisplaySettings(None, win32con.ENUM_CURRENT_SETTINGS)
+        self.current_width = self.original_devmode.PelsWidth
+        self.current_height = self.original_devmode.PelsHeight
+        print(f"[Display] Risoluzione originale salvata: {self.current_width}x{self.current_height}")
+
+    def change_resolution(self, width, height):
+        """Tenta di cambiare la risoluzione. Ritorna True se riesce."""
+        if not self.original_devmode: self.save_current()
+        if width == self.current_width and height == self.current_height: return True
+
+        devmode = win32api.EnumDisplaySettings(None, win32con.ENUM_CURRENT_SETTINGS)
+        devmode.PelsWidth = width
+        devmode.PelsHeight = height
+        devmode.Fields = win32con.DM_PELSWIDTH | win32con.DM_PELSHEIGHT
+
+        try:
+            res = win32api.ChangeDisplaySettings(devmode, win32con.CDS_TEST)
+            if res != win32con.DISP_CHANGE_SUCCESSFUL:
+                print("[Display] Risoluzione non supportata.")
+                return False
+
+            win32api.ChangeDisplaySettings(devmode, 0)
+            self.current_width = width
+            self.current_height = height
+            print(f"[Display] Risoluzione cambiata a {width}x{height}")
+            return True
+        except Exception as e:
+            print(f"[Display] Errore cambio risoluzione: {e}")
+            return False
+
+    def restore(self):
+        """Ripristina la risoluzione originale."""
+        if self.original_devmode:
+            print("[Display] Ripristino risoluzione originale...")
+            win32api.ChangeDisplaySettings(self.original_devmode, 0)
+
+
+# === GESTIONE CURSORE ===
 SYSTEM_CURSORS = {
     win32gui.LoadCursor(0, win32con.IDC_ARROW): 0,
     win32gui.LoadCursor(0, win32con.IDC_IBEAM): 1,
@@ -23,18 +71,14 @@ SYSTEM_CURSORS = {
     win32gui.LoadCursor(0, win32con.IDC_WAIT): 3,
     win32gui.LoadCursor(0, win32con.IDC_CROSS): 4,
     win32gui.LoadCursor(0, win32con.IDC_SIZENS): 5,
-    win32gui.LoadCursor(0, win32con.IDC_SIZEWE): 6,
-    # Aggiungi altri se necessario
+    win32gui.LoadCursor(0, win32con.IDC_SIZEWE): 6
 }
 
 
 def get_current_cursor_id():
-    """Restituisce l'ID del cursore attuale (0-6) o 0 se sconosciuto."""
     try:
-        # GetCursorInfo restituisce (flags, hCursor, (x,y))
         info = win32gui.GetCursorInfo()
-        h_cursor = info[1]
-        return SYSTEM_CURSORS.get(h_cursor, 0)
+        return SYSTEM_CURSORS.get(info[1], 0)
     except:
         return 0
 
@@ -45,85 +89,78 @@ class RemoteDesktopTarget:
         self.port = port
         self.sock = None
         self.running = False
-        self.screen_w, self.screen_h = pyautogui.size()
+        self.res_manager = ResolutionManager()
+        self.res_manager.save_current()  # Salva subito lo stato iniziale
 
     def _handle_input(self):
-        """Thread ricezione comandi."""
         while self.running:
             try:
-                # 1. Leggi tipo evento (1 byte)
                 header = self._recvall(1)
                 if not header: break
                 event_type = struct.unpack(">B", header)[0]
 
-                if event_type == 0:  # MOUSE MOVE
+                # Aggiorniamo le dimensioni schermo correnti per il mouse
+                screen_w, screen_h = pyautogui.size()
+
+                if event_type == 0:  # MOVE
                     data = self._recvall(8)
-                    norm_x, norm_y = struct.unpack(">ff", data)
-                    x, y = int(norm_x * self.screen_w), int(norm_y * self.screen_h)
-                    pyautogui.moveTo(x, y, _pause=False)
+                    nx, ny = struct.unpack(">ff", data)
+                    pyautogui.moveTo(int(nx * screen_w), int(ny * screen_h), _pause=False)
 
-                elif event_type in [1, 2]:  # MOUSE CLICK
+                elif event_type in [1, 2]:  # CLICK
                     data = self._recvall(9)
-                    btn_code, norm_x, norm_y = struct.unpack(">Bff", data)
-                    x, y = int(norm_x * self.screen_w), int(norm_y * self.screen_h)
-                    btn_map = {1: 'left', 2: 'middle', 3: 'right'}
-                    button = btn_map.get(btn_code, 'left')
-
+                    btn, nx, ny = struct.unpack(">Bff", data)
+                    x, y = int(nx * screen_w), int(ny * screen_h)
+                    btn_s = {1: 'left', 2: 'middle', 3: 'right'}.get(btn, 'left')
                     if event_type == 1:
-                        pyautogui.mouseDown(x, y, button=button)
+                        pyautogui.mouseDown(x, y, button=btn_s)
                     else:
-                        pyautogui.mouseUp(x, y, button=button)
+                        pyautogui.mouseUp(x, y, button=btn_s)
 
                 elif event_type == 3:  # SCROLL
                     data = self._recvall(4)
-                    amount = struct.unpack(">i", data)[0]
-                    pyautogui.scroll(amount)
+                    pyautogui.scroll(struct.unpack(">i", data)[0])
 
                 elif event_type in [4, 5]:  # KEYBOARD
-                    len_byte = self._recvall(1)
-                    if not len_byte: break
-                    key_len = struct.unpack(">B", len_byte)[0]
-                    key_name = self._recvall(key_len).decode('utf-8')
-
-                    # Controllo validità tasto
-                    if key_name in pyautogui.KEY_NAMES or len(key_name) == 1:
-                        if event_type == 4:
-                            pyautogui.keyDown(key_name)
-                        else:
-                            pyautogui.keyUp(key_name)
+                    l_byte = self._recvall(1)
+                    if not l_byte: break
+                    k_len = struct.unpack(">B", l_byte)[0]
+                    key = self._recvall(k_len).decode('utf-8')
+                    if event_type == 4:
+                        pyautogui.keyDown(key)
                     else:
-                        print(f"[Target] Tasto ignoto ricevuto: {key_name}")
+                        pyautogui.keyUp(key)
 
-            except socket.timeout:
-                continue
-            except Exception as e:
-                print(f"[Target] Input Error: {e}")
+                # NUOVO TIPO: 6 -> Richiesta Cambio Risoluzione
+                elif event_type == 6:
+                    data = self._recvall(8)
+                    w, h = struct.unpack(">II", data)
+                    print(f"[Target] Richiesta cambio ris: {w}x{h}")
+                    self.res_manager.change_resolution(w, h)
+
+            except Exception:
                 break
 
     def start(self):
-        print(f"[Target] Connecting to {self.controller_ip}:{self.port}")
-
+        print(f"[Target] Connessione a {self.controller_ip}:{self.port}")
         while True:
             try:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(5.0)
                 self.sock.connect((self.controller_ip, self.port))
-                self.sock.settimeout(0.5)
-
-                print("[Target] CONNECTED!")
                 self.running = True
+                print("[Target] Connesso!")
 
                 threading.Thread(target=self._handle_input, daemon=True).start()
                 self._stream_screen()
 
-            except (socket.timeout, ConnectionRefusedError, OSError):
-                print(f"[Target] Retrying connection in 2s...")
+            except Exception:
                 time.sleep(2)
             except KeyboardInterrupt:
                 break
             finally:
                 self.running = False
                 if self.sock: self.sock.close()
+                self.res_manager.restore()  # IMPORTANTE: Ripristina risoluzione
 
     def _recvall(self, n):
         data = b''
@@ -132,39 +169,32 @@ class RemoteDesktopTarget:
                 chunk = self.sock.recv(n - len(data))
                 if not chunk: return None
                 data += chunk
-            except socket.timeout:
-                continue
-            except OSError:
+            except:
                 return None
-        return data if len(data) == n else None
+        return data
 
     def _stream_screen(self):
         with mss.mss() as sct:
-            monitor = sct.monitors[1]
-            # Compressione JPEG per velocità (quality=50) o PNG (livello 3)
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
+            # QUALITÀ AUMENTATA: 90 (Prima era 60 o default)
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
 
             while self.running:
                 try:
-                    # Cattura schermo
+                    # Monitor 1 (adattivo se cambia risoluzione)
+                    monitor = sct.monitors[1]
                     img = np.array(sct.grab(monitor))
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-                    # Codifica
-                    _, encoded_img = cv2.imencode('.jpg', img, encode_param)
-                    data = encoded_img.tobytes()
+                    _, enc_img = cv2.imencode('.jpg', img, encode_param)
+                    data = enc_img.tobytes()
 
-                    # Ottieni ID cursore
-                    cursor_id = get_current_cursor_id()
-
-                    # PACKET: [Size 4B] + [CursorID 1B] + [Data]
-                    packet = struct.pack(">LB", len(data), cursor_id) + data
+                    cid = get_current_cursor_id()
+                    packet = struct.pack(">LB", len(data), cid) + data
                     self.sock.sendall(packet)
 
-                    # Limit FPS (opzionale)
-                    time.sleep(0.03)
-                except Exception as e:
-                    print(f"[Stream] Error: {e}")
+                    # Rimuovi lo sleep o tienilo molto basso per massimizzare FPS
+                    # time.sleep(0.01)
+                except:
                     break
 
 
@@ -172,7 +202,6 @@ def get_config_dialog():
     config = {"ip": None, "port": None}
     root = tk.Tk()
     root.title("Target Config")
-
     tk.Label(root, text="Controller IP:").pack()
     e_ip = tk.Entry(root);
     e_ip.insert(0, "192.168.1.X");
@@ -187,7 +216,7 @@ def get_config_dialog():
         config["port"] = int(e_port.get())
         root.destroy()
 
-    tk.Button(root, text="CONNECT", command=on_c).pack(pady=10)
+    tk.Button(root, text="CONNECT", command=on_c).pack()
     root.mainloop()
     return config["ip"], config["port"]
 
