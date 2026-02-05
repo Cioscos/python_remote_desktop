@@ -7,8 +7,9 @@ import tkinter as tk
 from tkinter import messagebox
 from PIL import Image, ImageTk
 
-# Mappatura Tasti Funzione e Speciali
-KEY_MAPPING = {
+# === 1. TASTI FUNZIONE E MODIFICATORI ===
+# Questi tasti mantengono il loro nome speciale per PyAutoGUI
+FUNCTION_KEY_MAPPING = {
     'Return': 'enter', 'BackSpace': 'backspace', 'Tab': 'tab', 'space': 'space',
     'Escape': 'esc', 'Delete': 'delete', 'Home': 'home', 'End': 'end',
     'Prior': 'pageup', 'Next': 'pagedown', 'Up': 'up', 'Down': 'down',
@@ -20,24 +21,34 @@ KEY_MAPPING = {
     'Shift_L': 'shift', 'Shift_R': 'shift',
     'Win_L': 'win', 'Win_R': 'win',
     'Caps_Lock': 'capslock',
-    'Insert': 'insert', 'Print': 'printscreen', 'Scroll_Lock': 'scrolllock', 'Pause': 'pause'
+    'Insert': 'insert', 'Print': 'printscreen', 'Scroll_Lock': 'scrolllock', 'Pause': 'pause',
+    'Num_Lock': 'numlock'
 }
 
-# Mappatura Estesa per Simboli (Tkinter keysym -> Tasto Base)
-# Mappa il nome del simbolo al tasto fisico che lo produce (Layout US standard come fallback comune)
-SHIFT_MAPPING = {
-    # Nomi Tkinter -> Tasto Base
+# === 2. MAPPATURA SIMBOLI (Base e Shiftati) ===
+# Mappiamo sia il nome "normale" (es. bracketleft) che quello "shiftato" (es. braceleft)
+# allo STESSO tasto base (es. '[').
+SYMBOL_MAPPING = {
+    # Simboli Standard (Nome Tkinter -> Tasto PyAutoGUI)
+    'minus': '-', 'underscore': '-',
+    'equal': '=', 'plus': '=',
+    'bracketleft': '[', 'braceleft': '[',
+    'bracketright': ']', 'braceright': ']',
+    'semicolon': ';', 'colon': ';',
+    'apostrophe': "'", 'quotedbl': "'", 'quoteright': "'", 'quoteleft': '`',
+    'grave': '`', 'asciitilde': '`',
+    'backslash': '\\', 'bar': '\\',
+    'comma': ',', 'less': ',',
+    'period': '.', 'greater': '.',
+    'slash': '/', 'question': '/',
+
+    # Numeri Shiftati (Es. Shift+1 = exclam -> inviamo '1')
     'exclam': '1', 'at': '2', 'numbersign': '3', 'dollar': '4', 'percent': '5',
     'asciicircum': '6', 'ampersand': '7', 'asterisk': '8', 'parenleft': '9', 'parenright': '0',
-    'underscore': '-', 'plus': '=',
-    'braceleft': '[', 'braceright': ']',
-    'colon': ';', 'quotedbl': "'",
-    'less': ',', 'greater': '.', 'question': '/',
-    'bar': '\\', 'asciitilde': '`',
 
-    # Caratteri diretti (nel caso Tkinter restituisca il char)
-    '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
-    '_': '-', '+': '=', '{': '[', '}': ']', ':': ';', '"': "'", '<': ',', '>': '.', '?': '/', '|': '\\', '~': '`'
+    # Caratteri diretti (fallback per layout diversi)
+    'ì': '[', 'è': '[', '+': ']',  # Esempi layout IT comuni
+    'ò': ';', 'à': "'", 'ù': '\\'
 }
 
 # Mappatura Cursori
@@ -70,7 +81,7 @@ class RemoteDesktopController:
         self.lbl.bind("<ButtonRelease-1>", lambda e: self._send_mouse_action(2, 1, e))
         self.lbl.bind("<ButtonPress-3>", lambda e: self._send_mouse_action(1, 3, e))
         self.lbl.bind("<ButtonRelease-3>", lambda e: self._send_mouse_action(2, 3, e))
-        self.lbl.bind("<ButtonPress-2>", lambda e: self._send_mouse_action(1, 2, e))  # Rotellina click
+        self.lbl.bind("<ButtonPress-2>", lambda e: self._send_mouse_action(1, 2, e))
         self.lbl.bind("<ButtonRelease-2>", lambda e: self._send_mouse_action(2, 2, e))
 
         # Scroll
@@ -210,51 +221,46 @@ class RemoteDesktopController:
         py_key = None
 
         if action_type == 4:  # KeyDown
-            # Priorità 1: Mappatura tasti speciali e modificatori
-            if keysym in KEY_MAPPING:
-                py_key = KEY_MAPPING[keysym]
-            # Priorità 2: Mappatura simboli shiftati (exclam -> 1)
-            elif keysym in SHIFT_MAPPING:
-                py_key = SHIFT_MAPPING[keysym]
-            # Priorità 3: Tasti normali (lettere, numeri)
+            # 1. Tasti Funzione (Invio, Esc, F1, Modificatori)
+            if keysym in FUNCTION_KEY_MAPPING:
+                py_key = FUNCTION_KEY_MAPPING[keysym]
+
+            # 2. Simboli speciali (sia normali che shiftati)
+            elif keysym in SYMBOL_MAPPING:
+                py_key = SYMBOL_MAPPING[keysym]
+
+            # 3. Lettere e Numeri semplici (len=1)
             elif len(keysym) == 1:
                 py_key = keysym.lower()
 
             if not py_key: return
 
-            # MODIFICA IMPORTANTE: Gestione Anti-Repeat Selettiva
-            # Blocchiamo la ripetizione SOLO per i modificatori.
-            # Permettiamo Backspace, Enter e Lettere di ripetersi.
+            # ANTI-REPEAT: Solo per i modificatori (Ctrl, Shift, Alt, Win)
+            # Permette a Backspace, Lettere e Frecce di ripetersi tenendo premuto
             is_modifier = py_key in ['ctrl', 'alt', 'shift', 'win', 'capslock']
 
             if is_modifier:
                 if py_key in self.pressed_keys: return
                 self.pressed_keys.add(py_key)
             else:
-                # Per i tasti non modificatori, non li aggiungiamo a pressed_keys
-                # per bloccarne l'invio, ma solo per tracciarne il rilascio se necessario.
-                # Tuttavia, per semplicità, permettiamo l'invio continuo del pacchetto KeyDown.
-                self.key_map[keysym] = py_key  # Memorizza quale tasto rilasciare dopo
+                self.key_map[keysym] = py_key  # Memorizza associazione per il rilascio
 
         elif action_type == 5:  # KeyUp
-            # Troviamo cosa inviare in base al keysym originale
-            # (Nota: per i simboli shiftati, rilasciamo il numero, es: 1)
-            if keysym in KEY_MAPPING:
-                py_key = KEY_MAPPING[keysym]
-            elif keysym in SHIFT_MAPPING:
-                py_key = SHIFT_MAPPING[keysym]
+            # Tentativo 1: Mappatura diretta
+            if keysym in FUNCTION_KEY_MAPPING:
+                py_key = FUNCTION_KEY_MAPPING[keysym]
+            elif keysym in SYMBOL_MAPPING:
+                py_key = SYMBOL_MAPPING[keysym]
             elif len(keysym) == 1:
                 py_key = keysym.lower()
             else:
-                # Fallback se non trovato direttamente
+                # Tentativo 2: Recupero dalla memoria (utile per casi limite)
                 py_key = self.key_map.pop(keysym, None)
 
             if not py_key: return
-
-            # Rimuovi dal set dei premuti (utile per i modificatori)
             self.pressed_keys.discard(py_key)
 
-        # Invia pacchetto
+        # Invia
         encoded = py_key.encode('utf-8')
         try:
             self.conn.sendall(struct.pack(">BB", action_type, len(encoded)) + encoded)
@@ -263,7 +269,6 @@ class RemoteDesktopController:
 
     def _on_focus_out(self, event):
         if not self.conn: return
-        # Rilascia tutti i modificatori conosciuti per sicurezza
         modifiers = ['ctrl', 'alt', 'shift', 'win']
         for k in modifiers:
             if k in self.pressed_keys:
