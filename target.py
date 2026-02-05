@@ -7,6 +7,8 @@ import mss
 import numpy as np
 import pyautogui
 import time
+import tkinter as tk
+from tkinter import messagebox
 
 
 class RemoteDesktopTarget:
@@ -45,7 +47,8 @@ class RemoteDesktopTarget:
                 break
 
     def start(self):
-        print(f"[Target] Avvio client verso {self.controller_ip} (Ctrl+C per chiudere)")
+        print(f"[Target] Avvio client verso {self.controller_ip}:{self.port}")
+        print("[Info] Premi Ctrl+C nella console per terminare.")
 
         while True:
             try:
@@ -56,7 +59,7 @@ class RemoteDesktopTarget:
                 # Una volta connesso, riduciamo il timeout per rendere reattivo recv
                 self.sock.settimeout(0.5)
 
-                print("[Target] Connesso!")
+                print("[Target] Connesso al Controller!")
                 self.running = True
 
                 mouse_thread = threading.Thread(target=self._handle_mouse_input, daemon=True)
@@ -65,16 +68,15 @@ class RemoteDesktopTarget:
                 self._stream_screen()
 
             except socket.timeout:
-                pass  # Timeout connessione, riprova
+                print(f"[Target] Timeout connessione verso {self.controller_ip}... Riprovo.")
             except (ConnectionRefusedError, OSError):
-                # Non stampare spam se il server è giù, aspetta e basta
-                pass
+                print(f"[Target] Controller non trovato su {self.controller_ip}. Riprovo tra 2s...")
             except KeyboardInterrupt:
                 print("\n[Target] Uscita richiesta dall'utente.")
                 self.running = False
                 break
             finally:
-                if self.running:  # Se siamo usciti per errore di rete, resettiamo
+                if self.running:
                     self.running = False
                 if self.sock:
                     self.sock.close()
@@ -88,6 +90,8 @@ class RemoteDesktopTarget:
 
     def _stream_screen(self):
         with mss.mss() as sct:
+            # Monitor 1 è solitamente "tutti i monitor" o il principale.
+            # Se hai più monitor e vuoi solo il primo, usa sct.monitors[1]
             monitor = sct.monitors[1]
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
 
@@ -99,7 +103,6 @@ class RemoteDesktopTarget:
                     _, encoded_img = cv2.imencode('.jpg', img, encode_param)
                     data = encoded_img.tobytes()
 
-                    # sendall può bloccare se il buffer è pieno, ma è raro con timeout
                     self.sock.sendall(struct.pack(">L", len(data)) + data)
 
                 except (socket.timeout, BlockingIOError):
@@ -112,7 +115,62 @@ class RemoteDesktopTarget:
                     break
 
 
+# --- FUNZIONE GUI CONFIGURAZIONE ---
+def get_config_dialog():
+    """Mostra una finestra Tkinter per chiedere IP e Porta."""
+    config = {"ip": None, "port": None}
+
+    root = tk.Tk()
+    root.title("Configurazione Target")
+    root.geometry("300x180")
+
+    # Label e Entry IP
+    tk.Label(root, text="IP del Controller:").pack(pady=(15, 5))
+    entry_ip = tk.Entry(root)
+    entry_ip.insert(0, "192.168.1.X")  # Placeholder comodo
+    entry_ip.pack()
+
+    # Label e Entry Porta
+    tk.Label(root, text="Porta:").pack(pady=(5, 5))
+    entry_port = tk.Entry(root)
+    entry_port.insert(0, "9999")
+    entry_port.pack()
+
+    def on_connect():
+        ip = entry_ip.get().strip()
+        port_str = entry_port.get().strip()
+
+        if not ip:
+            messagebox.showwarning("Errore", "Inserisci un IP valido.")
+            return
+
+        try:
+            port = int(port_str)
+            config["ip"] = ip
+            config["port"] = port
+            root.destroy()  # Chiude la finestra e prosegue
+        except ValueError:
+            messagebox.showerror("Errore", "La porta deve essere un numero.")
+
+    tk.Button(root, text="CONNETTI", command=on_connect, bg="#dddddd", height=2).pack(pady=20, fill="x", padx=20)
+
+    # Gestione chiusura con "X"
+    def on_close():
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    root.mainloop()
+
+    return config["ip"], config["port"]
+
+
 if __name__ == '__main__':
-    # Modifica IP
-    client = RemoteDesktopTarget('192.168.1.XX', port=9999)
-    client.start()
+    # 1. Chiedi configurazione via GUI
+    user_ip, user_port = get_config_dialog()
+
+    # 2. Se l'utente ha confermato, avvia il client
+    if user_ip and user_port:
+        client = RemoteDesktopTarget(user_ip, port=user_port)
+        client.start()
+    else:
+        print("[Target] Avvio annullato.")
