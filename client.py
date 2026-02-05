@@ -1,36 +1,36 @@
+# client.py (REVERSE CONNECTION - CONTROLLER)
 import socket
 import struct
 import cv2
 import numpy as np
 
-# Configurazione Client
-SERVER_IP = '127.0.0.1'  # CAMBIARE CON L'IP DEL SERVER REALE
+# Configurazione Client (Controller)
+# '0.0.0.0' significa "ascolta su tutte le mie schede di rete"
+BIND_IP = '0.0.0.0'
 PORT = 9999
 
 # Variabili globali per gestire la connessione nel callback del mouse
-client_socket = None
+connection_socket = None
 window_width = 1
 window_height = 1
 
 
 def send_mouse_event(event_type, x, y):
     """
-    Invia le coordinate al server.
+    Invia le coordinate al PC remoto.
     event_type: 0 = Move, 1 = Click
-    x, y: coordinate assolute nella finestra client
     """
-    if client_socket:
+    if connection_socket:
         try:
             # Coordinate Mapping: Normalizzazione (0.0 - 1.0)
-            # Questo rende il client indipendente dalla risoluzione reale del server
             norm_x = x / window_width
             norm_y = y / window_height
 
             # Packing: Tipo (Byte), X (Float), Y (Float)
             payload = struct.pack(">Bff", event_type, norm_x, norm_y)
-            client_socket.sendall(payload)
+            connection_socket.sendall(payload)
         except Exception:
-            pass  # Ignora errori di invio mouse per non bloccare il video
+            pass  # Ignora errori mouse per fluidità video
 
 
 def mouse_callback(event, x, y, flags, param):
@@ -45,8 +45,7 @@ def mouse_callback(event, x, y, flags, param):
 
 def recvall(sock, n):
     """
-    Funzione helper fondamentale per TCP.
-    Assicura di ricevere esattamente 'n' byte, gestendo la frammentazione dei pacchetti.
+    Assicura di ricevere esattamente 'n' byte
     """
     data = b''
     while len(data) < n:
@@ -57,58 +56,62 @@ def recvall(sock, n):
     return data
 
 
-def start_client():
-    global client_socket, window_width, window_height
+def start_listener():
+    global connection_socket, window_width, window_height
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Creazione socket in ascolto (Server-side logic sul controller)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect((SERVER_IP, PORT))
-        print(f"[Client] Connesso a {SERVER_IP}")
-    except ConnectionRefusedError:
-        print("[Client] Impossibile connettersi al server.")
+        listener.bind((BIND_IP, PORT))
+        listener.listen(1)
+        print(f"[Controller] In ascolto su {BIND_IP}:{PORT}...")
+        print("[Controller] In attesa che il PC remoto si connetta...")
+
+        # Accetta la connessione in entrata dal PC remoto
+        connection_socket, addr = listener.accept()
+        print(f"[Controller] Connessione ricevuta da {addr}")
+
+    except Exception as e:
+        print(f"[Controller] Errore bind/listen: {e}")
         return
 
-    cv2.namedWindow("Remote Desktop")
-    cv2.setMouseCallback("Remote Desktop", mouse_callback)
+    cv2.namedWindow("Reverse Remote Desktop")
+    cv2.setMouseCallback("Reverse Remote Desktop", mouse_callback)
 
     try:
         while True:
-            # 1. Ricezione Header (4 bytes per la dimensione del frame)
-            header_data = recvall(client_socket, 4)
+            # 1. Ricezione Header (4 bytes size)
+            header_data = recvall(connection_socket, 4)
             if not header_data:
                 break
 
-            # Unpack della dimensione (Big Endian Long)
             msg_size = struct.unpack(">L", header_data)[0]
 
-            # 2. Ricezione Payload (Dati Immagine JPEG)
-            frame_data = recvall(client_socket, msg_size)
+            # 2. Ricezione Payload (Immagine JPEG)
+            frame_data = recvall(connection_socket, msg_size)
             if not frame_data:
                 break
 
             # 3. Decodifica e Display
-            # Converti i byte in array numpy
             np_data = np.frombuffer(frame_data, dtype=np.uint8)
-            # Decodifica JPEG in immagine OpenCV
             frame = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
 
             if frame is not None:
-                # Aggiorna le dimensioni correnti della finestra per il calcolo del mouse
                 window_height, window_width = frame.shape[:2]
+                cv2.imshow("Reverse Remote Desktop", frame)
 
-                cv2.imshow("Remote Desktop", frame)
-
-            # Premi 'q' per uscire
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
     except Exception as e:
-        print(f"[Client] Errore: {e}")
+        print(f"[Controller] Errore: {e}")
     finally:
-        client_socket.close()
+        if connection_socket:
+            connection_socket.close()
+        listener.close()
         cv2.destroyAllWindows()
-        print("[Client] Sessione terminata.")
+        print("[Controller] Sessione terminata.")
 
 
 if __name__ == '__main__':
-    start_client()
+    start_listener()
