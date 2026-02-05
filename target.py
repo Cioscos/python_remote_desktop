@@ -8,11 +8,9 @@ import numpy as np
 import pyautogui
 import time
 import tkinter as tk
-from tkinter import messagebox
 
-# Configurazioni PyAutoGUI per velocità
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0  # Rimuove il ritardo di default tra le azioni
+pyautogui.PAUSE = 0
 
 
 class RemoteDesktopTarget:
@@ -140,8 +138,6 @@ class RemoteDesktopTarget:
                 except Exception:
                     break
 
-
-# --- GUI CONFIGURAZIONE (Invariata) ---
 def get_config_dialog():
     config = {"ip": None, "port": None}
     root = tk.Tk()
@@ -150,11 +146,11 @@ def get_config_dialog():
 
     tk.Label(root, text="IP Controller:").pack(pady=5)
     e_ip = tk.Entry(root);
-    e_ip.insert(0, "192.168.1.X");
+    e_ip.insert(0, "192.168.1.X")
     e_ip.pack()
     tk.Label(root, text="Porta:").pack(pady=5)
     e_port = tk.Entry(root);
-    e_port.insert(0, "9999");
+    e_port.insert(0, "9999")
     e_port.pack()
 
     def on_c():
