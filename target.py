@@ -123,14 +123,13 @@ class RemoteDesktopTarget:
     def _stream_screen(self):
         with mss.mss() as sct:
             monitor = sct.monitors[1]
-            # Qualità JPEG ridotta per fluidità (puoi alzarla a 70-80)
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+            encode_param = [int(cv2.IMWRITE_PNG_COMPRESSION), 3]
 
             while self.running:
                 try:
                     img = np.array(sct.grab(monitor))
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                    _, encoded_img = cv2.imencode('.jpg', img, encode_param)
+                    _, encoded_img = cv2.imencode('.png', img, encode_param)
                     data = encoded_img.tobytes()
 
                     # Invia lunghezza + dati
