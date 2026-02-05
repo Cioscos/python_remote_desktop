@@ -34,6 +34,7 @@ class RemoteDesktopController:
 
         # Set per tracciare i tasti ATTUALMENTE giù
         self.pressed_keys = set()
+        self.key_map = {}
 
         self.root = tk.Tk()
         self.root.title("Full Control Remote Desktop")
@@ -181,25 +182,36 @@ class RemoteDesktopController:
         """Gestisce pressione (4) e rilascio (5) tasti con filtro anti-ripetizione."""
         if not self.conn: return
 
-        # Mapping
-        key = event.keysym
-        if key in KEY_MAPPING:
-            py_key = KEY_MAPPING[key]
-        elif len(key) == 1:
-            py_key = key.lower()
-        else:
-            return
+        keysym = event.keysym
 
-            # --- LOGICA ANTI-REPEAT ---
         if action_type == 4:  # KeyDown
+            # PRIORITÀ: Usa event.char se è un carattere stampabile
+            # Questo cattura "!", "?", lettere maiuscole, etc. quando Shift è premuto
+            if event.char and event.char.isprintable() and event.char not in '\t\n\r':
+                py_key = event.char
+            elif keysym in KEY_MAPPING:
+                py_key = KEY_MAPPING[keysym]
+            elif len(keysym) == 1:
+                py_key = keysym.lower()
+            else:
+                return
+
+            # Memorizza quale carattere abbiamo inviato per questo tasto fisico
+            self.key_map[keysym] = py_key
+
+            # Anti-repeat
             if py_key in self.pressed_keys:
-                return  # Tasto già premuto, ignoriamo la ripetizione del sistema operativo
+                return
             self.pressed_keys.add(py_key)
 
         elif action_type == 5:  # KeyUp
+            # Recupera il carattere che avevamo inviato per questo tasto fisico
+            py_key = self.key_map.pop(keysym, None)
+            if not py_key:
+                return
             self.pressed_keys.discard(py_key)
 
-        # Se passiamo il filtro, inviamo il pacchetto
+        # Invia il pacchetto
         encoded = py_key.encode('utf-8')
         try:
             self.conn.sendall(struct.pack(">BB", action_type, len(encoded)) + encoded)

@@ -126,7 +126,7 @@ class RemoteDesktopTarget:
         with mss.mss() as sct:
             monitor = sct.monitors[1]
             # Qualità JPEG ridotta per fluidità (puoi alzarla a 70-80)
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
 
             while self.running:
                 try:
