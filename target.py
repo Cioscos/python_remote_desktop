@@ -29,18 +29,18 @@ class RemoteDesktopTarget:
             try:
                 # 1. Leggi il tipo di evento (1 byte)
                 # Tipi: 0=Move, 1=Down, 2=Up, 3=Scroll, 4=KeyDown, 5=KeyUp
-                header = self.sock.recv(1)
+                header = self._recvall(1)
                 if not header: break
                 event_type = struct.unpack(">B", header)[0]
 
                 if event_type == 0:  # MOUSE MOVE
-                    data = self.sock.recv(8)  # 2 float (4+4 byte)
+                    data = self._recvall(8)  # 2 float (4+4 byte)
                     norm_x, norm_y = struct.unpack(">ff", data)
                     x, y = int(norm_x * self.screen_w), int(norm_y * self.screen_h)
                     pyautogui.moveTo(x, y, _pause=False)
 
                 elif event_type in [1, 2]:  # MOUSE BUTTON DOWN/UP
-                    data = self.sock.recv(9)  # button_code (1B) + 2 float (8B)
+                    data = self._recvall(9)  # button_code (1B) + 2 float (8B)
                     btn_code, norm_x, norm_y = struct.unpack(">Bff", data)
                     x, y = int(norm_x * self.screen_w), int(norm_y * self.screen_h)
 
@@ -54,18 +54,18 @@ class RemoteDesktopTarget:
                         pyautogui.mouseUp(x, y, button=button)
 
                 elif event_type == 3:  # SCROLL
-                    data = self.sock.recv(4)  # int (4B)
+                    data = self._recvall(4)  # int (4B)
                     amount = struct.unpack(">i", data)[0]
                     pyautogui.scroll(amount)
 
                 elif event_type in [4, 5]:  # KEYBOARD
                     # Legge lunghezza nome tasto (1B)
-                    len_byte = self.sock.recv(1)
+                    len_byte = self._recvall(1)
                     if not len_byte: break
                     key_len = struct.unpack(">B", len_byte)[0]
 
                     # Legge il nome del tasto
-                    key_name = self.sock.recv(key_len).decode('utf-8')
+                    key_name = self._recvall(key_len).decode('utf-8')
 
                     if event_type == 4:
                         pyautogui.keyDown(key_name)
@@ -107,6 +107,20 @@ class RemoteDesktopTarget:
             finally:
                 self.running = False
                 if self.sock: self.sock.close()
+
+    def _recvall(self, n: int):
+        data = b''
+        while len(data) < n and self.running:
+            try:
+                chunk = self.sock.recv(n - len(data))
+                if not chunk:
+                    return None
+                data += chunk
+            except socket.timeout:
+                continue
+            except OSError:
+                return None
+        return data if len(data) == n else None
 
     def _stream_screen(self):
         with mss.mss() as sct:
