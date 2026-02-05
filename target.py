@@ -15,110 +15,104 @@ class RemoteDesktopTarget:
         self.port = port
         self.sock = None
         self.running = False
-
-        # Configurazione PyAutoGUI
         pyautogui.FAILSAFE = False
         self.screen_w, self.screen_h = pyautogui.size()
 
     def _handle_mouse_input(self):
-        """Thread separato per ricevere comandi mouse."""
+        """Thread mouse con gestione timeout per uscita pulita."""
         payload_size = struct.calcsize(">Bff")
 
         while self.running:
             try:
+                # recv ora lancerà socket.timeout se non riceve nulla entro 0.5s
                 data = self.sock.recv(payload_size)
                 if not data:
-                    break  # Connessione persa
+                    break
 
                 event_type, norm_x, norm_y = struct.unpack(">Bff", data)
-
-                # Conversione coordinate
                 real_x = int(norm_x * self.screen_w)
                 real_y = int(norm_y * self.screen_h)
 
-                if event_type == 0:  # Move
+                if event_type == 0:
                     pyautogui.moveTo(real_x, real_y, _pause=False)
-                elif event_type == 1:  # Click
+                elif event_type == 1:
                     pyautogui.click(real_x, real_y)
 
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                break  # Usciamo dal loop, il main thread gestirà la riconnessione
-            except Exception as e:
-                # Errori di unpacking o pyautogui non devono bloccare tutto
+            except socket.timeout:
+                # Nessun dato ricevuto, torniamo su per controllare 'self.running'
                 continue
+            except Exception:
+                break
 
     def start(self):
-        """Loop infinito di tentativi di connessione (Reverse Shell logic)."""
-        while True:
-            print(f"[Target] Tentativo di connessione a {self.controller_ip}:{self.port}...")
+        print(f"[Target] Avvio client verso {self.controller_ip} (Ctrl+C per chiudere)")
 
+        while True:
             try:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock.settimeout(5.0)  # Timeout per la connect
                 self.sock.connect((self.controller_ip, self.port))
-                print("[Target] Connessione stabilita!")
+
+                # Una volta connesso, riduciamo il timeout per rendere reattivo recv
+                self.sock.settimeout(0.5)
+
+                print("[Target] Connesso!")
                 self.running = True
 
-                # Avvia thread input mouse
-                input_thread = threading.Thread(target=self._handle_mouse_input, daemon=True)
-                input_thread.start()
+                mouse_thread = threading.Thread(target=self._handle_mouse_input, daemon=True)
+                mouse_thread.start()
 
-                # Loop invio schermo
                 self._stream_screen()
 
-            except (ConnectionRefusedError, TimeoutError):
-                print("[Target] Controller non trovato/non pronto.")
-            except (ConnectionResetError, BrokenPipeError):
-                print("[Target] Connessione interrotta dal Controller.")
-            except Exception as e:
-                print(f"[Target] Errore generico: {e}")
-            finally:
+            except socket.timeout:
+                pass  # Timeout connessione, riprova
+            except (ConnectionRefusedError, OSError):
+                # Non stampare spam se il server è giù, aspetta e basta
+                pass
+            except KeyboardInterrupt:
+                print("\n[Target] Uscita richiesta dall'utente.")
                 self.running = False
+                break
+            finally:
+                if self.running:  # Se siamo usciti per errore di rete, resettiamo
+                    self.running = False
                 if self.sock:
                     self.sock.close()
 
-                print("[Target] Riprovo tra 3 secondi...")
-                time.sleep(3)
+            # Piccolo sleep prima di riconnettersi, interrompibile
+            try:
+                time.sleep(2)
+            except KeyboardInterrupt:
+                print("\n[Target] Stop durante l'attesa.")
+                break
 
     def _stream_screen(self):
-        """Cattura schermo, comprime e invia."""
         with mss.mss() as sct:
-            # Seleziona il monitor principale
             monitor = sct.monitors[1]
-
-            # Parametri compressione JPEG
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
 
             while self.running:
                 try:
-                    # 1. Cattura
-                    img = sct.grab(monitor)
-                    frame = np.array(img)
+                    img = np.array(sct.grab(monitor))
+                    img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-                    # Converti da BGRA a BGR (rimuovi alpha channel per risparmiare banda)
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-
-                    # 2. Compressione
-                    result, encoded_img = cv2.imencode('.jpg', frame, encode_param)
-                    if not result:
-                        continue
-
+                    _, encoded_img = cv2.imencode('.jpg', img, encode_param)
                     data = encoded_img.tobytes()
-                    size = len(data)
 
-                    # 3. Invio (Size + Data)
-                    # struct.pack forza Big Endian (>) Unsigned Long (L)
-                    self.sock.sendall(struct.pack(">L", size) + data)
+                    # sendall può bloccare se il buffer è pieno, ma è raro con timeout
+                    self.sock.sendall(struct.pack(">L", len(data)) + data)
 
-                    # Piccolo sleep per non saturare la CPU se necessario (opzionale)
-                    # time.sleep(0.01)
-
-                except (ConnectionResetError, BrokenPipeError, OSError):
-                    print("[Target] Errore durante l'invio dati (Pipe rotta).")
-                    break  # Interrompe il while, triggera il finally del metodo start()
+                except (socket.timeout, BlockingIOError):
+                    continue
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    print("[Target] Connessione persa.")
+                    break
+                except Exception as e:
+                    print(f"[Target] Errore stream: {e}")
+                    break
 
 
 if __name__ == '__main__':
-    # Sostituisci con l'IP della macchina dove gira controller.py
-    IP_CONTROLLER = '192.168.1.XX'
-    client = RemoteDesktopTarget(IP_CONTROLLER, port=9999)
+    # Modifica IP
+    client = RemoteDesktopTarget('192.168.1.XX', port=9999)
     client.start()
