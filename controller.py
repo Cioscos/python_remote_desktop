@@ -520,3 +520,43 @@ class RemoteDesktopController:
         self.running = False
         if self.sock:
             self.sock.close()
+        try:
+            self.root.destroy()
+        except:
+            pass
+        import sys
+        sys.exit(0)
+
+    def _toggle_fullscreen(self):
+        self.is_fullscreen = not self.is_fullscreen
+        self.root.attributes("-fullscreen", self.is_fullscreen)
+
+        if self.is_fullscreen:
+            self.btn_fullscreen.configure(text="Esci da Fullscreen")
+        else:
+            self.btn_fullscreen.configure(text="Attiva Fullscreen")
+
+        self.root.focus_set()
+
+    def _exit_fullscreen(self, event=None):
+        """Metodo di sicurezza: ESC esce dal fullscreen se attivo"""
+        if self.is_fullscreen:
+            self._toggle_fullscreen()
+
+    def _on_mouse_move_wrapper(self, event):
+        """Wrapper che gestisce sia l'invio dati remoto che la UI locale"""
+        if event.y < 50:
+            self.btn_fullscreen.place(relx=0.5, y=10, anchor="n")
+            self.btn_fullscreen.lift()
+        else:
+            self.btn_fullscreen.place_forget()
+
+        self._send_mouse_move(event)
+
+    def start(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    app = RemoteDesktopController()
+    app.start()
