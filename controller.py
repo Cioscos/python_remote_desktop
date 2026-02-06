@@ -45,6 +45,10 @@ class RemoteDesktopController:
         self.conn = None
         self.running = False
 
+        # debounce variables
+        self.resize_timer = None
+        self.auto_resize_enabled = False
+
         # Dimensione Iniziale Finestra
         self.win_w, self.win_h = 1280, 720
 
@@ -139,6 +143,8 @@ class RemoteDesktopController:
         ctk.CTkButton(win, text="AVVIA", command=start_server).pack(pady=10)
 
     def _server_loop(self, ip, port, auto_resize):
+        self.auto_resize_enabled = auto_resize
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -154,8 +160,7 @@ class RemoteDesktopController:
                     print(f"[Info] Connected: {addr}")
                     self.pressed_keys.clear()
 
-                    # === FEATURE: Invia Risoluzione Target ===
-                    if auto_resize:
+                    if self.auto_resize_enabled:
                         threading.Timer(0.5, self._send_resolution_command).start()
 
                     while self.running:
@@ -172,14 +177,11 @@ class RemoteDesktopController:
 
                         try:
                             img = Image.open(io.BytesIO(data)).convert("RGB")
-
                             if self.win_w > 10 and self.win_h > 10:
                                 img = img.resize((self.win_w, self.win_h), Image.Resampling.BILINEAR)
-
-                            # CustomTkinter: CTkImage + CTkLabel
                             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(self.win_w, self.win_h))
                             self.lbl.configure(image=ctk_img, text="")
-                            self.lbl.image = ctk_img  # evita garbage collection
+                            self.lbl.image = ctk_img
                         except:
                             pass
 
@@ -317,6 +319,15 @@ class RemoteDesktopController:
     def _on_resize(self, event):
         if event.widget == self.root:
             self.win_w, self.win_h = event.width, event.height
+
+            # Schedules resolution command when auto‑resize enabled
+            if self.running and self.conn and self.auto_resize_enabled:
+
+                if self.resize_timer is not None:
+                    self.resize_timer.cancel()
+
+                self.resize_timer = threading.Timer(1.0, self._send_resolution_command)
+                self.resize_timer.start()
 
     def _on_close(self):
         self.running = False
