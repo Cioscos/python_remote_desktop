@@ -51,7 +51,7 @@ class RemoteDesktopController:
         self.pressed_keys = set()
         self.key_map = {}
 
-        # CustomTkinter setup (opzionale)
+        # CustomTkinter setup
         ctk.set_appearance_mode("System")
         ctk.set_default_color_theme("blue")
 
@@ -59,12 +59,26 @@ class RemoteDesktopController:
         self.root.title("Full Control Remote Desktop - High Quality")
         self.root.geometry(f"{self.win_w}x{self.win_h}")
 
-        # Label video (usa CTkLabel + CTkImage)
+        self.is_fullscreen = False
+
+        # Label video
         self.lbl = ctk.CTkLabel(self.root, text="", fg_color="black", cursor="arrow")
         self.lbl.pack(fill="both", expand=True)
 
-        # Binding Mouse
-        self.lbl.bind("<Motion>", self._send_mouse_move)
+        self.btn_fullscreen = ctk.CTkButton(
+            self.root,
+            text="Attiva Fullscreen",
+            command=self._toggle_fullscreen,
+            fg_color="red",  # Colore per distinguerlo
+            bg_color="transparent",  # Sfondo trasparente (relativo agli angoli)
+            height=30,
+            width=150
+        )
+        # Bindiamo l'evento anche sul bottone per evitare che sparisca se ci andiamo sopra
+        self.btn_fullscreen.bind("<Enter>", lambda e: self.btn_fullscreen.place(relx=0.5, y=10, anchor="n"))
+
+        self.lbl.bind("<Motion>", self._on_mouse_move_wrapper)
+
         self.lbl.bind("<ButtonPress-1>", lambda e: self._send_mouse_action(1, 1, e))
         self.lbl.bind("<ButtonRelease-1>", lambda e: self._send_mouse_action(2, 1, e))
         self.lbl.bind("<ButtonPress-3>", lambda e: self._send_mouse_action(1, 3, e))
@@ -72,18 +86,16 @@ class RemoteDesktopController:
         self.lbl.bind("<ButtonPress-2>", lambda e: self._send_mouse_action(1, 2, e))
         self.lbl.bind("<ButtonRelease-2>", lambda e: self._send_mouse_action(2, 2, e))
 
-        # Binding Scroll
         self.root.bind("<MouseWheel>", self._send_scroll)
         self.root.bind("<Button-4>", lambda e: self._send_scroll(e, 1))
         self.root.bind("<Button-5>", lambda e: self._send_scroll(e, -1))
 
-        # Binding Tastiera
         self.root.bind("<KeyPress>", lambda e: self._send_key(4, e))
         self.root.bind("<KeyRelease>", lambda e: self._send_key(5, e))
 
-        # Eventi Finestra
         self.root.bind("<Configure>", self._on_resize)
         self.root.bind("<FocusOut>", self._on_focus_out)
+        self.root.bind("<Escape>", self._exit_fullscreen)  # Tasto ESC per uscire
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.root.focus_set()
@@ -316,6 +328,37 @@ class RemoteDesktopController:
             pass
         import sys
         sys.exit(0)
+
+    def _toggle_fullscreen(self):
+        self.is_fullscreen = not self.is_fullscreen
+        self.root.attributes("-fullscreen", self.is_fullscreen)
+
+        if self.is_fullscreen:
+            self.btn_fullscreen.configure(text="Esci da Fullscreen")
+        else:
+            self.btn_fullscreen.configure(text="Attiva Fullscreen")
+
+        # Forziamo il focus sulla finestra principale per catturare i tasti
+        self.root.focus_set()
+
+    def _exit_fullscreen(self, event=None):
+        """Metodo di sicurezza: ESC esce dal fullscreen se attivo"""
+        if self.is_fullscreen:
+            self._toggle_fullscreen()
+
+    def _on_mouse_move_wrapper(self, event):
+        """Wrapper che gestisce sia l'invio dati remoto che la UI locale"""
+        # 1. Gestione UI (Apparizione Bottone)
+        # Se il mouse è nei primi 50 pixel in alto, mostra il bottone
+        if event.y < 50:
+            self.btn_fullscreen.place(relx=0.5, y=10, anchor="n")
+            self.btn_fullscreen.lift()  # Assicura che sia sopra l'immagine
+        else:
+            # Nascondi il bottone
+            self.btn_fullscreen.place_forget()
+
+        # 2. Invia movimento al server remoto
+        self._send_mouse_move(event)
 
     def start(self):
         self.root.mainloop()
