@@ -288,6 +288,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "pyautogui" },
+    { name = "pyperclip" },
     { name = "pywin32" },
 ]
 
@@ -299,6 +300,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.13.0.90" },
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "pyautogui", specifier = ">=0.9.54" },
+    { name = "pyperclip", specifier = ">=1.11.0" },
     { name = "pywin32", specifier = ">=311" },
 ]
 
