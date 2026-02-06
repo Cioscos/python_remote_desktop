@@ -1,11 +1,11 @@
-# controller.py (LISTENER - Visualizzatore)
+# controller.py (LISTENER - Visualizzatore) - CustomTkinter
 import socket
 import struct
 import io
 import threading
-import tkinter as tk
+import customtkinter as ctk
 from tkinter import messagebox
-from PIL import Image, ImageTk
+from PIL import Image
 
 FUNCTION_KEY_MAPPING = {
     'Return': 'enter', 'BackSpace': 'backspace', 'Tab': 'tab', 'space': 'space',
@@ -51,12 +51,17 @@ class RemoteDesktopController:
         self.pressed_keys = set()
         self.key_map = {}
 
-        self.root = tk.Tk()
+        # CustomTkinter setup (opzionale)
+        ctk.set_appearance_mode("System")
+        ctk.set_default_color_theme("blue")
+
+        self.root = ctk.CTk()
         self.root.title("Full Control Remote Desktop - High Quality")
         self.root.geometry(f"{self.win_w}x{self.win_h}")
 
-        self.lbl = tk.Label(self.root, bg="black", cursor="arrow")
-        self.lbl.pack(fill=tk.BOTH, expand=True)
+        # Label video (usa CTkLabel + CTkImage)
+        self.lbl = ctk.CTkLabel(self.root, text="", fg_color="black", cursor="arrow")
+        self.lbl.pack(fill="both", expand=True)
 
         # Binding Mouse
         self.lbl.bind("<Motion>", self._send_mouse_move)
@@ -85,34 +90,41 @@ class RemoteDesktopController:
         self._show_config_dialog()
 
     def _show_config_dialog(self):
-        win = tk.Toplevel(self.root)
+        win = ctk.CTkToplevel(self.root)
         win.title("Config")
-        win.geometry("300x220")
+        win.geometry("320x260")
+        win.transient(self.root)
+        win.grab_set()
 
-        tk.Label(win, text="IP Ascolto:").pack(pady=2)
-        e_ip = tk.Entry(win)
+        ctk.CTkLabel(win, text="IP Ascolto:").pack(pady=(12, 2))
+        e_ip = ctk.CTkEntry(win)
         e_ip.insert(0, "0.0.0.0")
-        e_ip.pack()
-        tk.Label(win, text="Porta:").pack(pady=2)
-        e_port = tk.Entry(win)
+        e_ip.pack(padx=12, fill="x")
+
+        ctk.CTkLabel(win, text="Porta:").pack(pady=(10, 2))
+        e_port = ctk.CTkEntry(win)
         e_port.insert(0, "9999")
-        e_port.pack()
+        e_port.pack(padx=12, fill="x")
 
         # Checkbox per il cambio risoluzione automatico
-        self.var_resize = tk.BooleanVar(value=True)
-        tk.Checkbutton(win, text="Adatta Risoluzione Target (RDP Style)", variable=self.var_resize).pack(pady=10)
+        self.var_resize = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            win,
+            text="Adatta Risoluzione Target (RDP Style)",
+            variable=self.var_resize
+        ).pack(pady=14, padx=12, anchor="w")
 
         def start_server():
             ip = e_ip.get().strip() or "0.0.0.0"
             try:
                 p = int(e_port.get().strip())
-                should_resize = self.var_resize.get()
+                should_resize = bool(self.var_resize.get())
                 win.destroy()
                 threading.Thread(target=self._server_loop, args=(ip, p, should_resize), daemon=True).start()
             except ValueError:
                 messagebox.showerror("Errore", "Porta non valida.")
 
-        tk.Button(win, text="AVVIA", command=start_server).pack(pady=10)
+        ctk.CTkButton(win, text="AVVIA", command=start_server).pack(pady=10)
 
     def _server_loop(self, ip, port, auto_resize):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -132,35 +144,35 @@ class RemoteDesktopController:
 
                     # === FEATURE: Invia Risoluzione Target ===
                     if auto_resize:
-                        # Aspettiamo un attimo per stabilità
                         threading.Timer(0.5, self._send_resolution_command).start()
 
                     while self.running:
                         header = self._recvall(5)
-                        if not header: break
+                        if not header:
+                            break
                         img_size, cursor_id = struct.unpack(">LB", header)
 
                         self._update_cursor(cursor_id)
 
                         data = self._recvall(img_size)
-                        if not data: break
+                        if not data:
+                            break
 
                         try:
-                            # Caricamento immagine (ottimizzato)
-                            img = Image.open(io.BytesIO(data))
+                            img = Image.open(io.BytesIO(data)).convert("RGB")
 
-                            # Ridimensionamento locale solo se necessario per fit nella finestra
-                            # (Se il target ha cambiato risoluzione, l'immagine dovrebbe già matchare quasi 1:1)
                             if self.win_w > 10 and self.win_h > 10:
                                 img = img.resize((self.win_w, self.win_h), Image.Resampling.BILINEAR)
 
-                            tk_img = ImageTk.PhotoImage(img)
-                            self.lbl.configure(image=tk_img)
-                            self.lbl.image = tk_img
+                            # CustomTkinter: CTkImage + CTkLabel
+                            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(self.win_w, self.win_h))
+                            self.lbl.configure(image=ctk_img, text="")
+                            self.lbl.image = ctk_img  # evita garbage collection
                         except:
                             pass
 
-                    if self.conn: self.conn.close()
+                    if self.conn:
+                        self.conn.close()
                     print("[Info] Disconnected")
                 except OSError:
                     break
@@ -170,9 +182,9 @@ class RemoteDesktopController:
 
     def _send_resolution_command(self):
         """Invia al target il comando per cambiare risoluzione."""
-        if not self.conn: return
+        if not self.conn:
+            return
         try:
-            # Inviamo la dimensione attuale della finestra del controller
             w, h = self.win_w, self.win_h
             print(f"[Info] Richiesta cambio risoluzione remota a: {w}x{h}")
             # Tipo 6 = Risoluzione, 2 unsigned int (W, H)
@@ -180,15 +192,13 @@ class RemoteDesktopController:
         except:
             pass
 
-    # ... Metodi _recvall, _update_cursor, _get_norm_coords, _send_mouse, _send_key ...
-    # ... Sono IDENTICI alla versione precedente, li includo per completezza ma non cambiano ...
-
     def _recvall(self, n):
         data = b''
         while len(data) < n:
             try:
                 chunk = self.conn.recv(n - len(data))
-                if not chunk: return None
+                if not chunk:
+                    return None
                 data += chunk
             except:
                 return None
@@ -197,14 +207,19 @@ class RemoteDesktopController:
     def _update_cursor(self, cursor_id):
         cursor_name = CURSOR_MAPPING.get(cursor_id, "arrow")
         if self.lbl.cget("cursor") != cursor_name:
-            self.lbl.config(cursor=cursor_name)
+            self.lbl.configure(cursor=cursor_name)
 
     def _get_norm_coords(self, event):
-        if self.win_w <= 0 or self.win_h <= 0: return 0.0, 0.0
-        return max(0.0, min(1.0, event.x / self.win_w)), max(0.0, min(1.0, event.y / self.win_h))
+        if self.win_w <= 0 or self.win_h <= 0:
+            return 0.0, 0.0
+        return (
+            max(0.0, min(1.0, event.x / self.win_w)),
+            max(0.0, min(1.0, event.y / self.win_h))
+        )
 
     def _send_mouse_move(self, event):
-        if not self.conn: return
+        if not self.conn:
+            return
         nx, ny = self._get_norm_coords(event)
         try:
             self.conn.sendall(struct.pack(">Bff", 0, nx, ny))
@@ -212,7 +227,8 @@ class RemoteDesktopController:
             pass
 
     def _send_mouse_action(self, atype, btn, event):
-        if not self.conn: return
+        if not self.conn:
+            return
         nx, ny = self._get_norm_coords(event)
         try:
             self.conn.sendall(struct.pack(">BBff", atype, btn, nx, ny))
@@ -220,15 +236,17 @@ class RemoteDesktopController:
             pass
 
     def _send_scroll(self, event, linux_delta=0):
-        if not self.conn: return
-        amt = linux_delta * 50 if linux_delta != 0 else int(event.delta / 2)
+        if not self.conn:
+            return
+        amt = linux_delta * 50 if linux_delta != 0 else int(getattr(event, "delta", 0) / 2)
         try:
             self.conn.sendall(struct.pack(">Bi", 3, amt))
         except:
             pass
 
     def _send_key(self, action_type, event):
-        if not self.conn: return
+        if not self.conn:
+            return
         keysym = event.keysym
         py_key = None
 
@@ -240,11 +258,13 @@ class RemoteDesktopController:
             elif len(keysym) == 1:
                 py_key = keysym.lower()
 
-            if not py_key: return
+            if not py_key:
+                return
 
             is_modifier = py_key in ['ctrl', 'alt', 'shift', 'win', 'capslock']
             if is_modifier:
-                if py_key in self.pressed_keys: return
+                if py_key in self.pressed_keys:
+                    return
                 self.pressed_keys.add(py_key)
             else:
                 self.key_map[keysym] = py_key
@@ -259,7 +279,8 @@ class RemoteDesktopController:
             else:
                 py_key = self.key_map.pop(keysym, None)
 
-            if not py_key: return
+            if not py_key:
+                return
             self.pressed_keys.discard(py_key)
 
         encoded = py_key.encode('utf-8')
@@ -269,7 +290,8 @@ class RemoteDesktopController:
             pass
 
     def _on_focus_out(self, event):
-        if not self.conn: return
+        if not self.conn:
+            return
         modifiers = ['ctrl', 'alt', 'shift', 'win']
         for k in modifiers:
             if k in self.pressed_keys:
@@ -286,7 +308,8 @@ class RemoteDesktopController:
 
     def _on_close(self):
         self.running = False
-        if self.sock: self.sock.close()
+        if self.sock:
+            self.sock.close()
         try:
             self.root.destroy()
         except:

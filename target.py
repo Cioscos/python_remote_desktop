@@ -1,4 +1,4 @@
-# target.py (SENDER - PC Controllato)
+# target.py (SENDER - PC Controllato) - CustomTkinter dialog
 import socket
 import threading
 import struct
@@ -7,11 +7,10 @@ import mss
 import numpy as np
 import pyautogui
 import time
-import tkinter as tk
+import customtkinter as ctk
 import win32gui
 import win32con
 import win32api
-import pywintypes
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
@@ -33,8 +32,10 @@ class ResolutionManager:
 
     def change_resolution(self, width, height):
         """Tenta di cambiare la risoluzione. Ritorna True se riesce."""
-        if not self.original_devmode: self.save_current()
-        if width == self.current_width and height == self.current_height: return True
+        if not self.original_devmode:
+            self.save_current()
+        if width == self.current_width and height == self.current_height:
+            return True
 
         devmode = win32api.EnumDisplaySettings(None, win32con.ENUM_CURRENT_SETTINGS)
         devmode.PelsWidth = width
@@ -96,7 +97,8 @@ class RemoteDesktopTarget:
         while self.running:
             try:
                 header = self._recvall(1)
-                if not header: break
+                if not header:
+                    break
                 event_type = struct.unpack(">B", header)[0]
 
                 # Aggiorniamo le dimensioni schermo correnti per il mouse
@@ -123,7 +125,8 @@ class RemoteDesktopTarget:
 
                 elif event_type in [4, 5]:  # KEYBOARD
                     l_byte = self._recvall(1)
-                    if not l_byte: break
+                    if not l_byte:
+                        break
                     k_len = struct.unpack(">B", l_byte)[0]
                     key = self._recvall(k_len).decode('utf-8')
                     if event_type == 4:
@@ -159,7 +162,8 @@ class RemoteDesktopTarget:
                 break
             finally:
                 self.running = False
-                if self.sock: self.sock.close()
+                if self.sock:
+                    self.sock.close()
                 self.res_manager.restore()  # IMPORTANTE: Ripristina risoluzione
 
     def _recvall(self, n):
@@ -167,7 +171,8 @@ class RemoteDesktopTarget:
         while len(data) < n and self.running:
             try:
                 chunk = self.sock.recv(n - len(data))
-                if not chunk: return None
+                if not chunk:
+                    return None
                 data += chunk
             except:
                 return None
@@ -175,12 +180,10 @@ class RemoteDesktopTarget:
 
     def _stream_screen(self):
         with mss.mss() as sct:
-            # QUALITÀ AUMENTATA: 90 (Prima era 60 o default)
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
 
             while self.running:
                 try:
-                    # Monitor 1 (adattivo se cambia risoluzione)
                     monitor = sct.monitors[1]
                     img = np.array(sct.grab(monitor))
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
@@ -191,32 +194,36 @@ class RemoteDesktopTarget:
                     cid = get_current_cursor_id()
                     packet = struct.pack(">LB", len(data), cid) + data
                     self.sock.sendall(packet)
-
-                    # Rimuovi lo sleep o tienilo molto basso per massimizzare FPS
-                    # time.sleep(0.01)
                 except:
                     break
 
 
 def get_config_dialog():
     config = {"ip": None, "port": None}
-    root = tk.Tk()
+
+    ctk.set_appearance_mode("System")
+    ctk.set_default_color_theme("blue")
+
+    root = ctk.CTk()
     root.title("Target Config")
-    tk.Label(root, text="Controller IP:").pack()
-    e_ip = tk.Entry(root);
-    e_ip.insert(0, "192.168.1.X");
-    e_ip.pack()
-    tk.Label(root, text="Port:").pack()
-    e_port = tk.Entry(root);
-    e_port.insert(0, "9999");
-    e_port.pack()
+    root.geometry("340x200")
+
+    ctk.CTkLabel(root, text="Controller IP:").pack(pady=(14, 2))
+    e_ip = ctk.CTkEntry(root)
+    e_ip.insert(0, "192.168.1.X")
+    e_ip.pack(padx=12, fill="x")
+
+    ctk.CTkLabel(root, text="Port:").pack(pady=(10, 2))
+    e_port = ctk.CTkEntry(root)
+    e_port.insert(0, "9999")
+    e_port.pack(padx=12, fill="x")
 
     def on_c():
-        config["ip"] = e_ip.get()
-        config["port"] = int(e_port.get())
+        config["ip"] = e_ip.get().strip()
+        config["port"] = int(e_port.get().strip())
         root.destroy()
 
-    tk.Button(root, text="CONNECT", command=on_c).pack()
+    ctk.CTkButton(root, text="CONNECT", command=on_c).pack(pady=14)
     root.mainloop()
     return config["ip"], config["port"]
 
