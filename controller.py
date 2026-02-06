@@ -7,13 +7,6 @@ import tkinter as tk
 from tkinter import messagebox
 from PIL import Image, ImageTk
 
-# ... (MANTENERE KEY_MAPPING, FUNCTION_KEY_MAPPING, SYMBOL_MAPPING, CURSOR_MAPPING COME PRIMA) ...
-# (Per brevità non li ricopio qui, sono identici alla risposta precedente)
-
-# Copia qui le mappe: KEY_MAPPING, FUNCTION_KEY_MAPPING, SYMBOL_MAPPING, CURSOR_MAPPING
-# Se non le hai, dimmelo e le rimetto, ma sono lunghe.
-# Le mappe sono essenziali per far funzionare tastiera e cursore.
-
 FUNCTION_KEY_MAPPING = {
     'Return': 'enter', 'BackSpace': 'backspace', 'Tab': 'tab', 'space': 'space',
     'Escape': 'esc', 'Delete': 'delete', 'Home': 'home', 'End': 'end',
@@ -52,7 +45,7 @@ class RemoteDesktopController:
         self.conn = None
         self.running = False
 
-        # Dimensione Iniziale Finestra (HD)
+        # Dimensione Iniziale Finestra
         self.win_w, self.win_h = 1280, 720
 
         self.pressed_keys = set()
