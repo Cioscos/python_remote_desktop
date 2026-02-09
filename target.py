@@ -1,4 +1,9 @@
-# target.py (SENDER - PC Controllato) - CustomTkinter dialog
+# target.py (SENDER - PC Controllato) - H.264 Streaming + Adaptive Bitrate + Full Features
+"""
+Modulo per lo streaming desktop remoto con encoding H.264 e controllo adattivo della qualità.
+Combina compressione hardware-accelerated con gestione dinamica della risoluzione e input.
+"""
+
 import socket
 import threading
 import struct
@@ -14,6 +19,7 @@ import win32gui
 import win32con
 import win32api
 import logging
+import av  # Richiede: pip install av
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -24,22 +30,41 @@ pyautogui.PAUSE = 0
 
 # === GESTIONE RISOLUZIONE ===
 class ResolutionManager:
+    """
+    Gestisce il cambio e ripristino della risoluzione dello schermo.
+    Salva la configurazione originale per ripristinarla alla disconnessione.
+    """
+
     def __init__(self):
+        """Inizializza il manager senza modificare la risoluzione corrente."""
         self.original_devmode = None
         self.current_width = 0
         self.current_height = 0
 
     def save_current(self):
-        """Salva la risoluzione attuale per il ripristino."""
+        """
+        Salva la risoluzione attuale del display per il ripristino successivo.
+        Deve essere chiamata prima di qualsiasi modifica.
+        """
         self.original_devmode = win32api.EnumDisplaySettings(None, win32con.ENUM_CURRENT_SETTINGS)
         self.current_width = self.original_devmode.PelsWidth
         self.current_height = self.original_devmode.PelsHeight
         logger.info(f"Risoluzione originale salvata: {self.current_width}x{self.current_height}")
 
     def change_resolution(self, width, height):
-        """Tenta di cambiare la risoluzione. Ritorna True se riesce."""
+        """
+        Tenta di cambiare la risoluzione dello schermo.
+
+        Args:
+            width (int): Larghezza desiderata in pixel
+            height (int): Altezza desiderata in pixel
+
+        Returns:
+            bool: True se il cambio è riuscito, False altrimenti
+        """
         if not self.original_devmode:
             self.save_current()
+
         if width == self.current_width and height == self.current_height:
             return True
 
@@ -49,11 +74,13 @@ class ResolutionManager:
         devmode.Fields = win32con.DM_PELSWIDTH | win32con.DM_PELSHEIGHT
 
         try:
+            # Test della compatibilità prima di applicare
             res = win32api.ChangeDisplaySettings(devmode, win32con.CDS_TEST)
             if res != win32con.DISP_CHANGE_SUCCESSFUL:
-                logger.warning("Risoluzione non supportata.")
+                logger.warning(f"Risoluzione {width}x{height} non supportata.")
                 return False
 
+            # Applicazione effettiva
             win32api.ChangeDisplaySettings(devmode, 0)
             self.current_width = width
             self.current_height = height
@@ -64,7 +91,7 @@ class ResolutionManager:
             return False
 
     def restore(self):
-        """Ripristina la risoluzione originale."""
+        """Ripristina la risoluzione originale salvata."""
         if self.original_devmode:
             logger.info("Ripristino risoluzione originale...")
             win32api.ChangeDisplaySettings(self.original_devmode, 0)
@@ -83,6 +110,12 @@ SYSTEM_CURSORS = {
 
 
 def get_current_cursor_id():
+    """
+    Ottiene l'ID del cursore attualmente visualizzato.
+
+    Returns:
+        int: ID del cursore (0-6), 0 se non riconosciuto
+    """
     try:
         info = win32gui.GetCursorInfo()
         return SYSTEM_CURSORS.get(info[1], 0)
@@ -91,7 +124,22 @@ def get_current_cursor_id():
 
 
 class RemoteDesktopTarget:
+    """
+    Classe principale per lo streaming desktop con encoding H.264 e controllo remoto.
+    Gestisce cattura schermo, compressione video, invio rete e ricezione comandi input.
+    """
+
     def __init__(self, controller_ip, port=9999, password=None, use_ssl=False, target_fps=30):
+        """
+        Inizializza il target del desktop remoto.
+
+        Args:
+            controller_ip (str): Indirizzo IP del controller
+            port (int): Porta di connessione (default: 9999)
+            password (str): Password per autenticazione (None per disabilitare)
+            use_ssl (bool): Abilita crittografia SSL/TLS
+            target_fps (int): Frame rate target per lo streaming
+        """
         self.controller_ip = controller_ip
         self.port = port
         self.password = password
@@ -105,22 +153,37 @@ class RemoteDesktopTarget:
         self.target_fps = target_fps
         self.frame_time = 1.0 / target_fps
 
-        # Clipboard
+        # Clipboard tracking
         self.last_clipboard = ""
 
-        # Quality adaptive
-        self.encode_quality = 90
+        # Adaptive Quality Settings per H.264
+        self.base_bitrate = 2000000  # 2 Mbps di partenza
+        self.min_bitrate = 200000  # 200 Kbps minimo
+        self.max_bitrate = 8000000  # 8 Mbps massimo
+        self.current_bitrate = self.base_bitrate
+        self.congestion_window = 0
 
     def _authenticate_with_server(self, sock):
-        """Autentica con il server usando challenge-response"""
+        """
+        Esegue autenticazione challenge-response con il server.
+
+        Args:
+            sock (socket): Socket di connessione
+
+        Returns:
+            bool: True se autenticato, False altrimenti
+        """
         if not self.password:
             return True
 
         try:
+            # Ricevi challenge dal server
             challenge = sock.recv(64).decode()
+            # Calcola risposta hash
             response = hashlib.sha256((challenge + self.password).encode()).hexdigest()
             sock.sendall(response.encode())
 
+            # Attendi conferma
             result = sock.recv(4).decode()
             if result == "OK":
                 logger.info("Autenticazione riuscita")
@@ -133,8 +196,13 @@ class RemoteDesktopTarget:
             return False
 
     def _handle_input(self):
+        """
+        Thread per la gestione degli eventi di input ricevuti dal controller.
+        Processa mouse, tastiera, risoluzione e clipboard in modo asincrono.
+        """
         while self.running:
             try:
+                # Leggi tipo evento
                 header = self._recvall(1)
                 if not header:
                     break
@@ -147,7 +215,7 @@ class RemoteDesktopTarget:
                     nx, ny = struct.unpack(">ff", data)
                     pyautogui.moveTo(int(nx * screen_w), int(ny * screen_h), _pause=False)
 
-                elif event_type in [1, 2]:  # CLICK
+                elif event_type in [1, 2]:  # MOUSE DOWN/UP
                     data = self._recvall(9)
                     btn, nx, ny = struct.unpack(">Bff", data)
                     x, y = int(nx * screen_w), int(ny * screen_h)
@@ -161,7 +229,7 @@ class RemoteDesktopTarget:
                     data = self._recvall(4)
                     pyautogui.scroll(struct.unpack(">i", data)[0])
 
-                elif event_type in [4, 5]:  # KEYBOARD
+                elif event_type in [4, 5]:  # KEY DOWN/UP
                     l_byte = self._recvall(1)
                     if not l_byte:
                         break
@@ -175,8 +243,11 @@ class RemoteDesktopTarget:
                 elif event_type == 6:  # RISOLUZIONE
                     data = self._recvall(8)
                     w, h = struct.unpack(">II", data)
-                    logger.info(f"Richiesta cambio ris: {w}x{h}")
-                    self.res_manager.change_resolution(w, h)
+                    logger.info(f"Richiesta cambio risoluzione: {w}x{h}")
+                    success = self.res_manager.change_resolution(w, h)
+                    if success:
+                        # Riavvia encoder con nuova risoluzione
+                        logger.info("Risoluzione cambiata, restart stream necessario")
 
                 elif event_type == 7:  # CLIPBOARD
                     data = self._recvall(4)
@@ -186,29 +257,34 @@ class RemoteDesktopTarget:
                         import pyperclip
                         pyperclip.copy(text)
                         self.last_clipboard = text
-                        logger.info("Clipboard sincronizzato")
+                        logger.info("Clipboard sincronizzato dal controller")
                     except ImportError:
-                        pass
+                        logger.warning("pyperclip non installato, clipboard non disponibile")
 
             except Exception as e:
                 logger.error(f"Input handler error: {e}")
                 break
 
     def start(self):
+        """
+        Avvia la connessione al controller e inizia lo streaming.
+        Gestisce riconnessione automatica in caso di errore.
+        """
         logger.info(f"Connessione a {self.controller_ip}:{self.port}")
         retry_delay = 2
 
         while True:
             try:
+                # Creazione socket con ottimizzazioni
                 raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 # TCP_NODELAY per ridurre latenza
                 raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                # Buffer più grandi
-                raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512000)
+                # Buffer più grande per H.264
+                raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB
 
                 raw_sock.connect((self.controller_ip, self.port))
 
-                # Wrap con SSL se abilitato
+                # Wrap SSL se richiesto
                 if self.use_ssl:
                     context = ssl.create_default_context()
                     context.check_hostname = False
@@ -225,10 +301,13 @@ class RemoteDesktopTarget:
                     continue
 
                 self.running = True
-                logger.info("Connesso!")
+                logger.info("Connesso! Avvio H.264 streaming...")
 
+                # Avvia thread input
                 threading.Thread(target=self._handle_input, daemon=True).start()
-                self._stream_screen()
+
+                # Stream principale
+                self._stream_h264()
 
             except ConnectionRefusedError:
                 logger.warning(f"Connessione rifiutata, riprovo tra {retry_delay}s...")
@@ -237,6 +316,7 @@ class RemoteDesktopTarget:
                 logger.error(f"Errore: {e}")
                 time.sleep(retry_delay)
             except KeyboardInterrupt:
+                logger.info("Interruzione utente")
                 break
             finally:
                 self.running = False
@@ -245,6 +325,15 @@ class RemoteDesktopTarget:
                 self.res_manager.restore()
 
     def _recvall(self, n):
+        """
+        Riceve esattamente n bytes dal socket.
+
+        Args:
+            n (int): Numero di bytes da ricevere
+
+        Returns:
+            bytes: Dati ricevuti o None se connessione chiusa
+        """
         data = b''
         while len(data) < n and self.running:
             try:
@@ -256,7 +345,130 @@ class RemoteDesktopTarget:
                 return None
         return data
 
-    def _stream_screen(self):
+    def _stream_h264(self):
+        """
+        Loop principale di streaming con encoding H.264 e adaptive bitrate.
+        Utilizza PyAV per compressione hardware-accelerated quando disponibile.
+        """
+        # Setup H.264 Encoder
+        # 'libx264' per CPU, 'h264_nvenc' per GPU NVIDIA, 'h264_qsv' per Intel QuickSync
+        codec_name = 'libx264'
+
+        try:
+            # Container fittizio per gestire il codec
+            container = av.open('pipe:', format='h264', mode='w')
+            stream = container.add_stream(codec_name, rate=self.target_fps)
+            stream.width = self.res_manager.current_width
+            stream.height = self.res_manager.current_height
+            stream.pix_fmt = 'yuv420p'
+            stream.bit_rate = self.current_bitrate
+
+            # Opzioni CRITICHE per bassa latenza
+            stream.options = {
+                'preset': 'ultrafast',  # Velocità encoding massima
+                'tune': 'zerolatency',  # Minimizza buffering
+                'profile': 'baseline',  # Compatibilità massima
+                'crf': '23'  # Qualità costante (0-51, lower=better)
+            }
+
+            logger.info(f"H.264 encoder inizializzato: {codec_name} @ {self.current_bitrate / 1000} kbps")
+        except Exception as e:
+            logger.error(f"Errore init codec H.264: {e}")
+            logger.info("Fallback a JPEG compression")
+            self._stream_jpeg_fallback()
+            return
+
+        with mss.mss() as sct:
+            last_frame_time = time.time()
+
+            while self.running:
+                try:
+                    # Frame rate limiter
+                    elapsed = time.time() - last_frame_time
+                    if elapsed < self.frame_time:
+                        time.sleep(self.frame_time - elapsed)
+                    last_frame_time = time.time()
+
+                    # 1. Cattura Schermo
+                    monitor = sct.monitors[1]
+                    img = np.array(sct.grab(monitor))
+                    img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+                    # Gestione cambio risoluzione dinamico
+                    h, w = img.shape[:2]
+                    if w != stream.width or h != stream.height:
+                        logger.warning(f"Risoluzione cambiata durante streaming: {w}x{h}")
+                        # Ricrea stream (costoso ma necessario)
+                        container.close()
+                        container = av.open('pipe:', format='h264', mode='w')
+                        stream = container.add_stream(codec_name, rate=self.target_fps)
+                        stream.width = w
+                        stream.height = h
+                        stream.pix_fmt = 'yuv420p'
+                        stream.bit_rate = self.current_bitrate
+                        stream.options = {
+                            'preset': 'ultrafast',
+                            'tune': 'zerolatency',
+                            'profile': 'baseline'
+                        }
+
+                    # 2. Conversione a VideoFrame PyAV
+                    frame = av.VideoFrame.from_ndarray(img, format='bgr24')
+
+                    # 3. Encoding H.264 (genera automaticamente I-frames e P-frames)
+                    packets = stream.encode(frame)
+
+                    # 4. Invio Pacchetti + Adaptive Quality
+                    cid = get_current_cursor_id()
+
+                    for packet in packets:
+                        data = packet.to_bytes()
+
+                        # Header: Size (4 bytes) + Cursor ID (1 byte)
+                        header = struct.pack(">LB", len(data), cid)
+
+                        # Misura latenza invio per adaptive bitrate
+                        send_start = time.time()
+                        self.sock.sendall(header + data)
+                        send_time = time.time() - send_start
+
+                        # === LOGICA ADAPTIVE QUALITY ===
+                        if send_time > 0.05:  # Più di 50ms = congestione
+                            self.congestion_window += 1
+                        else:
+                            self.congestion_window = max(0, self.congestion_window - 1)
+
+                        # Riduci bitrate se congestione persistente
+                        if self.congestion_window > 5:
+                            old_bitrate = self.current_bitrate
+                            self.current_bitrate = max(self.min_bitrate, int(self.current_bitrate * 0.8))
+                            stream.bit_rate = self.current_bitrate
+                            self.congestion_window = 0
+                            logger.info(f"Riduzione Bitrate: {old_bitrate / 1000} → {self.current_bitrate / 1000} kbps")
+
+                        # Aumenta bitrate lentamente se rete libera
+                        elif self.congestion_window == 0 and self.current_bitrate < self.max_bitrate:
+                            self.current_bitrate = min(self.max_bitrate, int(self.current_bitrate * 1.01))
+                            stream.bit_rate = self.current_bitrate
+
+                except Exception as e:
+                    logger.error(f"Stream error: {e}")
+                    break
+
+        # Cleanup
+        try:
+            container.close()
+        except:
+            pass
+
+    def _stream_jpeg_fallback(self):
+        """
+        Modalità fallback con compressione JPEG se H.264 non disponibile.
+        Meno efficiente ma garantisce compatibilità universale.
+        """
+        logger.info("Streaming in modalità JPEG fallback")
+        encode_quality = 90
+
         with mss.mss() as sct:
             last_frame_time = time.time()
 
@@ -272,52 +484,65 @@ class RemoteDesktopTarget:
                     img = np.array(sct.grab(monitor))
                     img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-                    # Compressione con qualità configurabile
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), self.encode_quality]
+                    # Compressione JPEG
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), encode_quality]
                     _, enc_img = cv2.imencode('.jpg', img, encode_param)
                     data = enc_img.tobytes()
 
                     cid = get_current_cursor_id()
                     packet = struct.pack(">LB", len(data), cid) + data
                     self.sock.sendall(packet)
+
                 except Exception as e:
-                    logger.error(f"Stream error: {e}")
+                    logger.error(f"JPEG stream error: {e}")
                     break
 
 
 def get_config_dialog():
+    """
+    Mostra dialog CustomTkinter per configurazione connessione.
+
+    Returns:
+        dict: Configurazione con chiavi ip, port, password, ssl, fps
+    """
     config = {"ip": None, "port": None, "password": None, "ssl": False, "fps": 30}
 
     ctk.set_appearance_mode("System")
     ctk.set_default_color_theme("blue")
 
     root = ctk.CTk()
-    root.title("Target Config")
-    root.geometry("380x360")
+    root.title("Remote Desktop Target - Config")
+    root.geometry("380x380")
 
-    ctk.CTkLabel(root, text="Controller IP:").pack(pady=(14, 2))
-    e_ip = ctk.CTkEntry(root)
+    # IP Controller
+    ctk.CTkLabel(root, text="Controller IP:", font=("Arial", 12, "bold")).pack(pady=(14, 2))
+    e_ip = ctk.CTkEntry(root, width=300)
     e_ip.insert(0, "192.168.1.X")
     e_ip.pack(padx=12, fill="x")
 
-    ctk.CTkLabel(root, text="Port:").pack(pady=(10, 2))
-    e_port = ctk.CTkEntry(root)
+    # Porta
+    ctk.CTkLabel(root, text="Port:", font=("Arial", 12, "bold")).pack(pady=(10, 2))
+    e_port = ctk.CTkEntry(root, width=300)
     e_port.insert(0, "9999")
     e_port.pack(padx=12, fill="x")
 
-    ctk.CTkLabel(root, text="Password (lascia vuoto se non richiesta):").pack(pady=(10, 2))
-    e_pass = ctk.CTkEntry(root, show="*")
+    # Password
+    ctk.CTkLabel(root, text="Password (opzionale):", font=("Arial", 12, "bold")).pack(pady=(10, 2))
+    e_pass = ctk.CTkEntry(root, show="*", width=300)
     e_pass.pack(padx=12, fill="x")
 
-    ctk.CTkLabel(root, text="Target FPS:").pack(pady=(10, 2))
-    e_fps = ctk.CTkEntry(root)
+    # FPS Target
+    ctk.CTkLabel(root, text="Target FPS:", font=("Arial", 12, "bold")).pack(pady=(10, 2))
+    e_fps = ctk.CTkEntry(root, width=300)
     e_fps.insert(0, "30")
     e_fps.pack(padx=12, fill="x")
 
+    # SSL Toggle
     var_ssl = ctk.BooleanVar(value=False)
     ctk.CTkCheckBox(root, text="Usa SSL/TLS", variable=var_ssl).pack(pady=8, padx=12, anchor="w")
 
-    def on_c():
+    def on_connect():
+        """Callback per il pulsante di connessione."""
         config["ip"] = e_ip.get().strip()
         config["port"] = int(e_port.get().strip())
         config["password"] = e_pass.get().strip() or None
@@ -325,7 +550,8 @@ def get_config_dialog():
         config["fps"] = int(e_fps.get().strip())
         root.destroy()
 
-    ctk.CTkButton(root, text="CONNECT", command=on_c).pack(pady=14)
+    ctk.CTkButton(root, text="CONNECT", command=on_connect, height=40).pack(pady=14)
+
     root.mainloop()
     return config
 
@@ -333,10 +559,11 @@ def get_config_dialog():
 if __name__ == '__main__':
     cfg = get_config_dialog()
     if cfg["ip"] and cfg["port"]:
-        RemoteDesktopTarget(
-            cfg["ip"],
-            cfg["port"],
-            cfg["password"],
-            cfg["ssl"],
-            cfg["fps"]
-        ).start()
+        target = RemoteDesktopTarget(
+            controller_ip=cfg["ip"],
+            port=cfg["port"],
+            password=cfg["password"],
+            use_ssl=cfg["ssl"],
+            target_fps=cfg["fps"]
+        )
+        target.start()
