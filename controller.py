@@ -351,7 +351,7 @@ class RemoteDesktopController:
                     if self.use_h264:
                         try:
                             self.codec = av.CodecContext.create('h264', 'r')
-                            self.codec.flags |= av.codec.context.Flags.LOW_DELAY
+                            self.codec.flags |= av.codec.context.Flags.low_delay
                             logger.info("H.264 decoder inizializzato")
                         except Exception as e:
                             logger.error(f"Errore init H.264 decoder: {e}")
