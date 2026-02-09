@@ -280,7 +280,7 @@ class RemoteDesktopTarget:
                 # TCP_NODELAY per ridurre latenza
                 raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 # Buffer più grande per H.264
-                raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB
+                #raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB
 
                 raw_sock.connect((self.controller_ip, self.port))
 
@@ -424,8 +424,10 @@ class RemoteDesktopTarget:
                     for packet in packets:
                         data = bytes(packet)
 
-                        # Header: Size (4 bytes) + Cursor ID (1 byte)
-                        header = struct.pack(">LB", len(data), cid)
+                        timestamp = time.time()
+
+                        # Header: Length (4B) | Cursor (1B) | Timestamp (8B)
+                        header = struct.pack(">LBd", len(data), cid, timestamp)
 
                         # Misura latenza invio per adaptive bitrate
                         send_start = time.time()

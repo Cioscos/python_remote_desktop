@@ -351,6 +351,7 @@ class RemoteDesktopController:
                     if self.use_h264:
                         try:
                             self.codec = av.CodecContext.create('h264', 'r')
+                            self.codec.flags |= av.codec.context.Flags.LOW_DELAY
                             logger.info("H.264 decoder inizializzato")
                         except Exception as e:
                             logger.error(f"Errore init H.264 decoder: {e}")
@@ -376,10 +377,10 @@ class RemoteDesktopController:
                     while self.running:
                         frame_start = time.time()
 
-                        header = self._recvall(5)
+                        header = self._recvall(13)
                         if not header:
                             break
-                        img_size, cursor_id = struct.unpack(">LB", header)
+                        img_size, cursor_id, frame_timestamp = struct.unpack(">LBd", header)
 
                         self._update_cursor(cursor_id)
 
@@ -397,7 +398,8 @@ class RemoteDesktopController:
 
                             # Aggiorna statistiche
                             self.frame_count += 1
-                            self.current_latency = int((time.time() - frame_start) * 1000)
+                            latency_seconds = time.time() - frame_timestamp
+                            self.current_latency = int(latency_seconds * 1000)
                             self._update_stats()
                         except Exception as e:
                             logger.error(f"Frame decode error: {e}")
