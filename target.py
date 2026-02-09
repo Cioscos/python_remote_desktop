@@ -422,7 +422,7 @@ class RemoteDesktopTarget:
                     cid = get_current_cursor_id()
 
                     for packet in packets:
-                        data = packet.to_bytes()
+                        data = bytes(packet)
 
                         # Header: Size (4 bytes) + Cursor ID (1 byte)
                         header = struct.pack(">LB", len(data), cid)
